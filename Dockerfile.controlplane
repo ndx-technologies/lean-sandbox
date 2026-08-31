@@ -1,0 +1,17 @@
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 go build -o /controlplane ./cmd/controlplane
+
+FROM alpine:3.20 AS certs
+RUN apk --no-cache add ca-certificates
+
+FROM scratch
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build /controlplane /controlplane
+
+ENTRYPOINT [ "/controlplane" ]
