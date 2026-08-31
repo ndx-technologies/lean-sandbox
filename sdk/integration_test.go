@@ -1,7 +1,6 @@
 package sdk_test
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,17 +16,20 @@ func TestRealSandbox(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode: skipping live-sandbox integration test")
 	}
-	url := os.Getenv("CONTROL_PLANE_URL")
-	apiKey := os.Getenv("CONTROL_PLANE_API_KEY")
 
-	ctx := context.Background()
-	cp := &sdk.ControlPlane{BaseURL: url, APIKey: apiKey, HTTPClient: http.DefaultClient}
+	cp := &sdk.ControlPlane{
+		BaseURL:    os.Getenv("CONTROL_PLANE_URL"),
+		APIKey:     os.Getenv("CONTROL_PLANE_API_KEY"),
+		HTTPClient: http.DefaultClient,
+	}
+
+	ctx := t.Context()
 
 	sb, err := cp.NewSandbox(ctx, api.SandboxRequest{Image: "ubuntu:22.04"})
 	if err != nil {
 		t.Fatalf("create sandbox: %v", err)
 	}
-	t.Cleanup(func() { _ = cp.Delete(context.Background(), sb.Sandbox.ID) })
+	t.Cleanup(func() { _ = cp.Delete(ctx, sb.Sandbox.ID) })
 
 	// Sequential run: stdout + exit code round-trip.
 	res, err := sb.Run(ctx, "echo hello-lean-sandbox && pwd")
@@ -35,10 +37,10 @@ func TestRealSandbox(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	if res.ExitCode != 0 {
-		t.Fatalf("exit=%d want 0", res.ExitCode)
+		t.Error(err)
 	}
 	if !strings.Contains(res.Stdout, "hello-lean-sandbox") {
-		t.Fatalf("stdout=%q missing marker", res.Stdout)
+		t.Errorf("stdout=%q missing marker", res.Stdout)
 	}
 
 	// Parallel runs on the SAME sandbox/session: the agent must serialize
@@ -46,9 +48,9 @@ func TestRealSandbox(t *testing.T) {
 	const n = 5
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
+
 	for i := range n {
 		wg.Go(func() {
-			defer wg.Done()
 			r, err := sb.Run(ctx, fmt.Sprintf("echo p%d && sleep 0.2", i))
 			if err != nil {
 				errs <- fmt.Errorf("parallel run %d: %w", i, err)
@@ -63,8 +65,11 @@ func TestRealSandbox(t *testing.T) {
 			}
 		})
 	}
+
 	wg.Wait()
+
 	close(errs)
+
 	for err := range errs {
 		t.Error(err)
 	}

@@ -26,3 +26,14 @@ defer cp.Delete(ctx, sb.Sandbox.ID)
 res, err := sb.Run(ctx, "pwd && echo hi")
 fmt.Print(res.Stdout, res.ExitCode)
 ```
+
+## Benchmarks
+
+```
+=== RUN   TestTiming
+    timing_test.go:26: claim (NewSandbox):      29.326873ms
+    timing_test.go:34: first run (true):        16.347234ms
+    timing_test.go:46: sequential echo x:       avg=22.312768ms (n=10)
+    timing_test.go:53: run `sleep 1` (wall):    1.01384993s
+--- PASS: TestTiming (1.50s)
+```
