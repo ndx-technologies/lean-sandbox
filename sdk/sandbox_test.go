@@ -12,12 +12,24 @@ import (
 	"github.com/ndx-technologies/lean-sandbox/sdk"
 )
 
-// startAgent spins up the real agent HTTP server in-process on a random port.
+// startAgent spins up the real agent HTTP server in-process on a random port,
+// plus a fake control plane that answers keepalive (204), so Run/Stream's
+// automatic lease renewal works without a real control plane.
 func startAgent(t *testing.T) (*sdk.Sandbox, string) {
 	t.Helper()
-	srv := httptest.NewServer(agent.NewServer("").Handler())
-	t.Cleanup(srv.Close)
-	return &sdk.Sandbox{Sandbox: api.Sandbox{Endpoint: srv.URL}, HTTPClient: srv.Client()}, srv.URL
+	agentSrv := httptest.NewServer(agent.NewServer("").Handler())
+	t.Cleanup(agentSrv.Close)
+
+	cpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(cpSrv.Close)
+
+	return &sdk.Sandbox{
+		Sandbox:      api.Sandbox{Endpoint: agentSrv.URL},
+		HTTPClient:   agentSrv.Client(),
+		ControlPlane: &sdk.ControlPlane{BaseURL: cpSrv.URL, HTTPClient: cpSrv.Client()},
+	}, agentSrv.URL
 }
 
 func TestAgentHealthz(t *testing.T) {

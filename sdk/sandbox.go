@@ -4,21 +4,21 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/ndx-technologies/lean-sandbox/api"
 )
 
-// Sandbox is a handle to a created sandbox. Each sandbox has exactly one
-// persistent bash session, created lazily on first use. Lifecycle operations
-// (KeepAlive, Delete) go through the ControlPlane; this handle only talks to
-// the sandbox's agent.
+// Sandbox is a handle to a created sandbox.
+// Each sandbox has exactly one persistent bash session, created lazily on first use.
 type Sandbox struct {
-	Sandbox    api.Sandbox
-	HTTPClient *http.Client
+	Sandbox      api.Sandbox
+	HTTPClient   *http.Client
+	ControlPlane *ControlPlane
 }
 
 // Run executes a command in the sandbox's persistent session, preserving
@@ -31,6 +31,13 @@ func (sb *Sandbox) Run(ctx context.Context, command string) (*api.RunResponse, e
 	if err := sb.do(ctx, http.MethodPost, "/v1/run", req, &out); err != nil {
 		return nil, err
 	}
+
+	go func() {
+		if err := sb.ControlPlane.KeepAlive(ctx, sb.Sandbox.ID); err != nil {
+			slog.ErrorContext(ctx, "cannot keep alive sandbox", "sandbox_id", sb.Sandbox.ID, "error", err)
+		}
+	}()
+
 	return &out, nil
 }
 
@@ -43,8 +50,7 @@ func (sb *Sandbox) Stream(ctx context.Context, command string) (<-chan api.Strea
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		sb.Sandbox.Endpoint+"/v1/run-stream", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, sb.Sandbox.Endpoint+"/v1/run-stream", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +64,10 @@ func (sb *Sandbox) Stream(ctx context.Context, command string) (<-chan api.Strea
 	}
 	if resp.StatusCode != http.StatusOK {
 		var e api.Error
-		_ = json.NewDecoder(resp.Body).Decode(&e)
+		if err := json.UnmarshalRead(resp.Body, &e); err != nil {
+			slog.ErrorContext(ctx, "cannot decode respose error", "error", err)
+		}
+
 		resp.Body.Close()
 		if e.Error == "" {
 			e.Error = resp.Status
@@ -66,27 +75,37 @@ func (sb *Sandbox) Stream(ctx context.Context, command string) (<-chan api.Strea
 		return nil, fmt.Errorf("agent stream: %s", e.Error)
 	}
 
+	go func() {
+		if err := sb.ControlPlane.KeepAlive(ctx, sb.Sandbox.ID); err != nil {
+			slog.ErrorContext(ctx, "cannot keep alive sandbox", "sandbox_id", sb.Sandbox.ID, "error", err)
+		}
+	}()
+
 	events := make(chan api.StreamEvent, 64)
 	go func() {
 		defer close(events)
 		defer resp.Body.Close()
 		sc := bufio.NewScanner(resp.Body)
 		sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+
 		for sc.Scan() {
 			line := sc.Text()
 			if len(line) < 6 || line[:6] != "data: " {
 				continue // skip : ping comments and empty frames
 			}
+
 			var ev api.StreamEvent
 			if err := json.Unmarshal([]byte(line[6:]), &ev); err != nil {
 				continue
 			}
+
 			select {
 			case events <- ev:
 			case <-ctx.Done():
 				return
 			}
 		}
+
 		if err := sc.Err(); err != nil {
 			// Stream ended abnormally: emit a done event with the error so
 			// the caller sees a terminal state instead of a silent hang.
@@ -96,6 +115,7 @@ func (sb *Sandbox) Stream(ctx context.Context, command string) (<-chan api.Strea
 			}
 		}
 	}()
+
 	return events, nil
 }
 
@@ -126,18 +146,23 @@ func (sb *Sandbox) do(ctx context.Context, method, path string, body, out any) e
 		return err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode >= 400 {
 		var e api.Error
-		_ = json.NewDecoder(resp.Body).Decode(&e)
+		if err := json.UnmarshalRead(resp.Body, &e); err != nil {
+			slog.ErrorContext(ctx, "cannot decode error", "error", err)
+		}
 		if e.Error == "" {
 			e.Error = resp.Status
 		}
 		return fmt.Errorf("agent %s: %s", resp.Status, e.Error)
 	}
+
 	if out == nil {
 		return nil
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+
+	return json.UnmarshalRead(resp.Body, &out)
 }
 
 // ReadFile reads a file from the sandbox filesystem.

@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/ndx-technologies/lean-sandbox/api"
@@ -22,7 +23,7 @@ func (s *ControlPlane) NewSandbox(ctx context.Context, req api.SandboxRequest) (
 	if err := s.doJSON(ctx, http.MethodPost, "/v1/sandboxes", req, &out); err != nil {
 		return nil, err
 	}
-	return &Sandbox{Sandbox: out, HTTPClient: s.HTTPClient}, nil
+	return &Sandbox{Sandbox: out, HTTPClient: s.HTTPClient, ControlPlane: s}, nil
 }
 
 func (s *ControlPlane) GetSandbox(ctx context.Context, id api.SandboxID) (*Sandbox, error) {
@@ -30,7 +31,7 @@ func (s *ControlPlane) GetSandbox(ctx context.Context, id api.SandboxID) (*Sandb
 	if err := s.doJSON(ctx, http.MethodGet, "/v1/sandboxes/"+id.String(), nil, &out); err != nil {
 		return nil, err
 	}
-	return &Sandbox{Sandbox: out, HTTPClient: s.HTTPClient}, nil
+	return &Sandbox{Sandbox: out, HTTPClient: s.HTTPClient, ControlPlane: s}, nil
 }
 
 // KeepAlive renews the lease on a sandbox so the janitor does not reclaim it
@@ -81,7 +82,10 @@ func (s *ControlPlane) doJSON(ctx context.Context, method, path string, body, ou
 
 	if resp.StatusCode >= 400 {
 		var e api.Error
-		_ = json.UnmarshalRead(resp.Body, &e)
+		if err := json.UnmarshalRead(resp.Body, &e); err != nil {
+			slog.ErrorContext(ctx, "cannot decode error", "error", err)
+		}
+
 		if e.Error == "" {
 			e.Error = resp.Status
 		}
