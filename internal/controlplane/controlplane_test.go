@@ -16,7 +16,7 @@ import (
 func newTestCP(t *testing.T) *ControlPlane {
 	t.Helper()
 	cp := &ControlPlane{
-		opts: Options{
+		config: Config{
 			Namespace:      "opensandbox",
 			AgentPort:      9090,
 			LeaseTTL:       15 * time.Minute,
@@ -86,7 +86,7 @@ func TestReconcileExpiresIdleSandbox(t *testing.T) {
 	cp := newTestCP(t)
 	id := api.NewSandboxID()
 	sb := registerClaimed(cp, id, "ubuntu:22.04")
-	sb.LastSeen = time.Now().Add(-2 * cp.opts.LeaseTTL) // stale lease
+	sb.LastSeen = time.Now().Add(-2 * cp.config.LeaseTTL) // stale lease
 
 	cp.reconcile(context.Background())
 

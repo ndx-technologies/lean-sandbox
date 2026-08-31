@@ -1,11 +1,11 @@
 package api
 
-import (
-	"uuid"
-)
+import "uuid"
 
 const (
-	// AccessTokenHeader authenticates agent requests (optional; set via -access-token).
+	// AccessTokenHeader carries the control-plane-signed JWT that authenticates
+	// agent requests. The agent verifies it with -controlplane-public-key and
+	// requires sub to equal its -sandbox-id.
 	AccessTokenHeader = "X-Access-Token"
 
 	// APIKeyHeader authenticates control plane requests (required).

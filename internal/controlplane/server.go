@@ -1,7 +1,7 @@
 package controlplane
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"io"
 	"net/http"
 
@@ -35,7 +35,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var req api.SandboxRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+	if err := json.UnmarshalRead(io.LimitReader(r.Body, 1<<20), &req); err != nil {
 		writeCPErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
@@ -44,7 +44,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeCPErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeCPJSON(w, http.StatusOK, sb.toAPI())
+	writeCPJSON(w, http.StatusOK, api.Sandbox{ID: sb.ID, Image: sb.Image, Status: "Running", Endpoint: sb.Endpoint, AccessToken: s.cp.mintJWT(sb.ID)})
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +58,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeCPErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeCPJSON(w, http.StatusOK, sb.toAPI())
+	writeCPJSON(w, http.StatusOK, api.Sandbox{ID: sb.ID, Image: sb.Image, Status: "Running", Endpoint: sb.Endpoint, AccessToken: s.cp.mintJWT(sb.ID)})
 }
 
 func (s *Server) handleKeepAlive(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +72,7 @@ func (s *Server) handleKeepAlive(w http.ResponseWriter, r *http.Request) {
 		writeCPErr(w, http.StatusGone, err.Error())
 		return
 	}
-	writeCPJSON(w, http.StatusOK, sb.toAPI())
+	writeCPJSON(w, http.StatusOK, api.Sandbox{ID: sb.ID, Image: sb.Image, Status: "Running", Endpoint: sb.Endpoint, AccessToken: s.cp.mintJWT(sb.ID)})
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -92,25 +92,15 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	sbs := s.cp.ListSandboxes(r.Context())
 	out := make([]api.Sandbox, 0, len(sbs))
 	for _, sb := range sbs {
-		out = append(out, sb.toAPI())
+		out = append(out, api.Sandbox{ID: sb.ID, Image: sb.Image, Status: "Running", Endpoint: sb.Endpoint})
 	}
 	writeCPJSON(w, http.StatusOK, map[string]any{"sandboxes": out})
-}
-
-func (sb *Sandbox) toAPI() api.Sandbox {
-	return api.Sandbox{
-		ID:          sb.ID,
-		Image:       sb.Image,
-		Status:      "Running",
-		Endpoint:    sb.Endpoint,
-		AccessToken: sb.AccessToken,
-	}
 }
 
 func writeCPJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = json.MarshalWrite(w, v)
 }
 
 func writeCPErr(w http.ResponseWriter, code int, msg string) {

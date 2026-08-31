@@ -2,13 +2,16 @@ package sdk_test
 
 import (
 	"context"
+	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ndx-technologies/lean-sandbox/api"
 	"github.com/ndx-technologies/lean-sandbox/internal/agent"
+	"github.com/ndx-technologies/lean-sandbox/internal/jwt"
 	"github.com/ndx-technologies/lean-sandbox/sdk"
 )
 
@@ -17,7 +20,8 @@ import (
 // automatic lease renewal works without a real control plane.
 func startAgent(t *testing.T) (*sdk.Sandbox, string) {
 	t.Helper()
-	agentSrv := httptest.NewServer(agent.NewServer("").Handler())
+	sandboxID := api.NewSandboxID()
+	agentSrv := httptest.NewServer(mustAgent(t, sandboxID, "").Handler())
 	t.Cleanup(agentSrv.Close)
 
 	cpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -30,6 +34,38 @@ func startAgent(t *testing.T) (*sdk.Sandbox, string) {
 		HTTPClient:   agentSrv.Client(),
 		ControlPlane: &sdk.ControlPlane{BaseURL: cpSrv.URL, HTTPClient: cpSrv.Client()},
 	}, agentSrv.URL
+}
+
+// mustAgent builds an agent server, failing the test on invalid input.
+func mustAgent(t *testing.T, sandboxID api.SandboxID, pubKeyB64 string) *agent.Server {
+	t.Helper()
+	srv, err := agent.NewServer(sandboxID, pubKeyB64)
+	if err != nil {
+		t.Fatalf("agent.NewServer: %v", err)
+	}
+	return srv
+}
+
+// mustSign signs an RS256 JWT with the shared jwt package, failing on error.
+func mustSign(t *testing.T, key *rsa.PrivateKey, sub string, ttl time.Duration) string {
+	t.Helper()
+	tok, err := jwt.Sign(key, sub, ttl)
+	if err != nil {
+		t.Fatalf("jwt.Sign: %v", err)
+	}
+	return tok
+}
+
+func getStatus(t *testing.T, url, token string) int {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set(api.AccessTokenHeader, token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
 }
 
 func TestAgentHealthz(t *testing.T) {
@@ -96,8 +132,12 @@ func TestFileReadWrite(t *testing.T) {
 }
 
 func TestAgentAuth(t *testing.T) {
-	// Token-auth server: requests without the token must be rejected.
-	srv := httptest.NewServer(agent.NewServer("secret").Handler())
+	priv, pubB64, err := jwt.GenerateKey()
+	if err != nil {
+		t.Fatalf("jwt.GenerateKey: %v", err)
+	}
+	sandboxID := api.NewSandboxID()
+	srv := httptest.NewServer(mustAgent(t, sandboxID, pubB64).Handler())
 	t.Cleanup(srv.Close)
 
 	// No token -> 401.
@@ -110,16 +150,19 @@ func TestAgentAuth(t *testing.T) {
 		t.Fatalf("no-token status=%d want 401", resp.StatusCode)
 	}
 
-	// With token -> 200.
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/healthz", nil)
-	req.Header.Set(api.AccessTokenHeader, "secret")
-	resp2, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("auth get: %v", err)
+	// Wrong sandbox id -> 401.
+	if got := getStatus(t, srv.URL+"/healthz", mustSign(t, priv, api.NewSandboxID().String(), time.Hour)); got != http.StatusUnauthorized {
+		t.Fatalf("wrong-sub status=%d want 401", got)
 	}
-	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("with-token status=%d want 200", resp2.StatusCode)
+
+	// Expired -> 401.
+	if got := getStatus(t, srv.URL+"/healthz", mustSign(t, priv, sandboxID.String(), -time.Minute)); got != http.StatusUnauthorized {
+		t.Fatalf("expired status=%d want 401", got)
+	}
+
+	// Valid -> 200.
+	if got := getStatus(t, srv.URL+"/healthz", mustSign(t, priv, sandboxID.String(), time.Hour)); got != http.StatusOK {
+		t.Fatalf("valid status=%d want 200", got)
 	}
 }
 

@@ -36,7 +36,7 @@ func buildOutOfClusterConfig() (*rest.Config, error) {
 // podSpec builds the sandbox pod: user image runs the injected agent binary.
 // An init container copies the static agent binary from AgentImage into a
 // shared emptyDir; the sandbox container then starts it as its entrypoint.
-func (cp *ControlPlane) podSpec(image string, id api.SandboxID, accessToken string) *corev1.Pod {
+func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string) *corev1.Pod {
 	podName := "lean-sbx-" + id.String()
 	labels := map[string]string{
 		"app":                        "lean-sandbox",
@@ -47,7 +47,7 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, accessToken stri
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
-			Namespace: cp.opts.Namespace,
+			Namespace: cp.config.Namespace,
 			Labels:    labels,
 		},
 		Spec: corev1.PodSpec{
@@ -55,7 +55,7 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, accessToken stri
 			InitContainers: []corev1.Container{
 				{
 					Name:    "agent-inject",
-					Image:   cp.opts.AgentImage,
+					Image:   cp.config.AgentImage,
 					Command: []string{"/agent", "-install-to", agentBinPath},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "agent-bin", MountPath: agentMountPath},
@@ -67,9 +67,9 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, accessToken stri
 					Name:    "sandbox",
 					Image:   image,
 					Command: []string{agentBinPath},
-					Args:    agentArgs(cp.opts.AgentPort, accessToken),
+					Args:    agentArgs(cp.config.AgentPort, id.String(), pubKeyB64),
 					Ports: []corev1.ContainerPort{
-						{Name: "agent", ContainerPort: int32(cp.opts.AgentPort), Protocol: corev1.ProtocolTCP},
+						{Name: "agent", ContainerPort: int32(cp.config.AgentPort), Protocol: corev1.ProtocolTCP},
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "agent-bin", MountPath: agentMountPath},
@@ -97,12 +97,15 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, accessToken stri
 	}
 }
 
-// agentArgs builds the sandbox container args, forwarding the access token so
-// agent pods require the same token the control plane hands out to clients.
-func agentArgs(port int, accessToken string) []string {
+// agentArgs builds the sandbox container args: the sandbox id (JWT sub must
+// match) and the control plane's public key so the agent can verify JWTs.
+func agentArgs(port int, sandboxID, pubKeyB64 string) []string {
 	args := []string{"-listen", ":" + strconv.Itoa(port)}
-	if accessToken != "" {
-		args = append(args, "-access-token", accessToken)
+	if sandboxID != "" {
+		args = append(args, "-sandbox-id", sandboxID)
+	}
+	if pubKeyB64 != "" {
+		args = append(args, "-controlplane-public-key", pubKeyB64)
 	}
 	return args
 }
@@ -110,7 +113,7 @@ func agentArgs(port int, accessToken string) []string {
 // resourcesFor returns the pod resources for image, using its warm-pool spec
 // when configured, otherwise lean defaults so the warm pool is cheap while idle.
 func (cp *ControlPlane) resourcesFor(image string) corev1.ResourceRequirements {
-	for _, s := range cp.opts.Config.Sandboxes {
+	for _, s := range cp.config.Sandboxes {
 		if s.Image == image && (len(s.Resources.Requests) > 0 || len(s.Resources.Limits) > 0) {
 			return s.Resources
 		}

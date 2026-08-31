@@ -18,14 +18,14 @@ func main() {
 		addr       string
 		apiKey     string
 		configPath string
-		options    controlplane.Options
+		config     controlplane.Config
 	)
 	flag.StringVar(&addr, "listen", ":8080", "HTTP listen address")
 	flag.StringVar(&apiKey, "api-key", "", "require this key in X-Api-Key header (empty = no auth)")
-	flag.StringVar(&options.Namespace, "namespace", "opensandbox", "namespace for sandbox pods")
-	flag.IntVar(&options.AgentPort, "agent-port", 9090, "agent container port")
-	flag.StringVar(&options.AgentImage, "agent-image", "", "image carrying the agent binary (required)")
-	flag.DurationVar(&options.LeaseTTL, "ttl", 15*time.Minute, "sandbox lease: reclaimed when no KeepAlive for this long")
+	flag.StringVar(&config.Namespace, "namespace", "opensandbox", "namespace for sandbox pods")
+	flag.IntVar(&config.AgentPort, "agent-port", 9090, "agent container port")
+	flag.StringVar(&config.AgentImage, "agent-image", "", "image carrying the agent binary (required)")
+	flag.DurationVar(&config.LeaseTTL, "ttl", 15*time.Minute, "sandbox lease: reclaimed when no KeepAlive for this long")
 	flag.StringVar(&configPath, "config", os.Getenv("CONFIG_PATH"), "path to config")
 	flag.Parse()
 
@@ -34,10 +34,12 @@ func main() {
 		if err != nil {
 			log.Fatalf("load config %s: %v", configPath, err)
 		}
-		options.Config = cfg
+		config = config.Merge(cfg)
 	}
 
-	cp, err := controlplane.New(options)
+	config = config.WithDefaults()
+
+	cp, err := controlplane.New(config)
 	if err != nil {
 		log.Fatal(err)
 	}

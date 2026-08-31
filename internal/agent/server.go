@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"crypto/rsa"
 	"encoding/json/v2"
 	"fmt"
 	"io"
@@ -12,18 +13,31 @@ import (
 	"time"
 
 	"github.com/ndx-technologies/lean-sandbox/api"
+	"github.com/ndx-technologies/lean-sandbox/internal/jwt"
 )
 
 // Server is the in-pod agent HTTP server.
 // Each pod hosts exactly one session, created lazily on the first run.
 type Server struct {
-	mu      sync.Mutex
-	session *Session
-	token   string
+	mu        sync.Mutex
+	session   *Session
+	sandboxID api.SandboxID
+	pubKey    *rsa.PublicKey // nil disables auth
 }
 
-// NewServer returns an agent server. token empty disables auth.
-func NewServer(token string) *Server { return &Server{token: token} }
+// NewServer returns an agent server requiring an RS256 JWT signed by the
+// control plane with sub == sandboxID. publicKeyB64 is the control plane's
+// base64 SPKI RSA public key; empty disables auth.
+func NewServer(sandboxID api.SandboxID, publicKeyB64 string) (*Server, error) {
+	if publicKeyB64 == "" {
+		return &Server{sandboxID: sandboxID}, nil
+	}
+	pub, err := jwt.ParsePublicKey(publicKeyB64)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{sandboxID: sandboxID, pubKey: pub}, nil
+}
 
 // getOrCreate returns the pod's single session, creating it on first use.
 func (s *Server) getOrCreate() *Session {
@@ -48,7 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/file", s.handleReadFile)
 	mux.HandleFunc("PUT /v1/file", s.handleWriteFile)
 
-	return authMiddleware(s.token, mux)
+	return authMiddleware(s.sandboxID, s.pubKey, mux)
 }
 
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
@@ -199,12 +213,12 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 	}
 }
 
-func authMiddleware(token string, next http.Handler) http.Handler {
-	if token == "" {
+func authMiddleware(sandboxID api.SandboxID, pub *rsa.PublicKey, next http.Handler) http.Handler {
+	if pub == nil {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(api.AccessTokenHeader) != token {
+		if err := jwt.Verify(r.Header.Get(api.AccessTokenHeader), pub, sandboxID.String(), time.Now()); err != nil {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

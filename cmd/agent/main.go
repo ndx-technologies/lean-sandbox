@@ -12,17 +12,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ndx-technologies/lean-sandbox/api"
 	"github.com/ndx-technologies/lean-sandbox/internal/agent"
 )
 
 func main() {
 	var (
-		addr        string
-		accessToken string
-		installTo   string
+		addr            string
+		sandboxID       api.SandboxID
+		controlPlanePub string
+		installTo       string
 	)
 	flag.StringVar(&addr, "listen", ":9090", "HTTP listen address")
-	flag.StringVar(&accessToken, "access-token", "", "require this token in X-Access-Token header (empty = no auth)")
+	flag.TextVar(&sandboxID, "sandbox-id", sandboxID, "this sandbox's id; JWT sub must match")
+	flag.StringVar(&controlPlanePub, "controlplane-public-key", "", "base64 SPKI RSA public key of the control plane (empty = no auth)")
 	flag.StringVar(&installTo, "install-to", "", "copy own executable to this path and exit (for init-container injection into scratch)")
 	flag.Parse()
 
@@ -35,9 +38,13 @@ func main() {
 		return
 	}
 
+	agentSrv, err := agent.NewServer(sandboxID, controlPlanePub)
+	if err != nil {
+		log.Fatalf("agent server: %v", err)
+	}
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           agent.NewServer(accessToken).Handler(),
+		Handler:           agentSrv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

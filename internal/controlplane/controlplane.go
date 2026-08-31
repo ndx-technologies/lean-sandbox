@@ -2,8 +2,7 @@ package controlplane
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"crypto/rsa"
 	"fmt"
 	"log"
 	"net/http"
@@ -19,29 +18,19 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/ndx-technologies/lean-sandbox/api"
+	"github.com/ndx-technologies/lean-sandbox/internal/jwt"
 )
 
 // Sandbox is the control plane's record of a sandbox pod.
 type Sandbox struct {
-	ID          api.SandboxID
-	Image       string
-	PodName     string
-	Namespace   string
-	Endpoint    string // podIP:agentPort
-	AccessToken string // per-sandbox token required by the agent
-	CreatedAt   time.Time
-	LastSeen    time.Time // renewed by KeepAlive; drives the lease TTL
-	Claimed     bool      // false = warm pool member, true = handed to a client
-}
-
-// Options configures the control plane.
-type Options struct {
-	Config         Config        // warm pool + pod resources per image, from CONFIG_PATH
-	Namespace      string        // namespace where sandbox pods live (default "sandbox")
-	AgentPort      int           // agent container port (default 9090)
-	AgentImage     string        // image carrying the agent binary for injection
-	LeaseTTL       time.Duration // sandbox lifetime without KeepAlive (activity-based)
-	ReconcileEvery time.Duration
+	ID        api.SandboxID
+	Image     string
+	PodName   string
+	Namespace string
+	Endpoint  string // podIP:agentPort
+	CreatedAt time.Time
+	LastSeen  time.Time // renewed by KeepAlive; drives the lease TTL
+	Claimed   bool      // false = warm pool member, true = handed to a client
 }
 
 // ControlPlane manages sandbox pods.
@@ -49,29 +38,17 @@ type Options struct {
 // a warm pool of ready sandbox Pods per image, claim/release lifecycle,
 // TTL-based cleanup, and the HTTP API consumed by the SDK.
 type ControlPlane struct {
-	opts      Options
-	kube      kubernetes.Interface
-	mu        sync.RWMutex
-	byID      map[api.SandboxID]*Sandbox
-	byImage   map[string][]*Sandbox // warm (unclaimed) sandboxes per image
-	startedAt time.Time             // this instance's start; older pods are orphans
+	config     Config
+	kube       kubernetes.Interface
+	mu         sync.RWMutex
+	byID       map[api.SandboxID]*Sandbox
+	byImage    map[string][]*Sandbox // warm (unclaimed) sandboxes per image
+	startedAt  time.Time             // this instance's start; older pods are orphans
+	signingKey *rsa.PrivateKey       // signs per-sandbox JWTs; private key never leaves this process
+	pubKeyB64  string                // base64 SPKI public key, injected into agent pods
 }
 
-// New builds a ControlPlane from in-cluster or kubeconfig settings.
-func New(opts Options) (*ControlPlane, error) {
-	if opts.Namespace == "" {
-		opts.Namespace = "sandbox"
-	}
-	if opts.AgentPort == 0 {
-		opts.AgentPort = 9090
-	}
-	if opts.ReconcileEvery == 0 {
-		opts.ReconcileEvery = 30 * time.Second
-	}
-	if opts.LeaseTTL == 0 {
-		opts.LeaseTTL = 15 * time.Minute
-	}
-
+func New(config Config) (*ControlPlane, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		cfg, err = buildOutOfClusterConfig()
@@ -84,18 +61,25 @@ func New(opts Options) (*ControlPlane, error) {
 		return nil, fmt.Errorf("kubernetes client: %w", err)
 	}
 
+	signingKey, pubKeyB64, err := jwt.GenerateKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate signing key: %w", err)
+	}
+
 	return &ControlPlane{
-		opts:      opts,
-		kube:      kube,
-		byID:      map[api.SandboxID]*Sandbox{},
-		byImage:   map[string][]*Sandbox{},
-		startedAt: time.Now(),
+		config:     config,
+		kube:       kube,
+		byID:       map[api.SandboxID]*Sandbox{},
+		byImage:    map[string][]*Sandbox{},
+		startedAt:  time.Now(),
+		signingKey: signingKey,
+		pubKeyB64:  pubKeyB64,
 	}, nil
 }
 
 // Run starts background loops: warm-pool reconcile and TTL janitor.
 func (cp *ControlPlane) Run(ctx context.Context) {
-	ticker := time.NewTicker(cp.opts.ReconcileEvery)
+	ticker := time.NewTicker(cp.config.ReconcileEvery)
 	defer ticker.Stop()
 	for {
 		select {
@@ -112,7 +96,7 @@ func (cp *ControlPlane) reconcile(ctx context.Context) {
 	cp.sweepNonRunning(ctx)
 	cp.reapOrphans(ctx)
 
-	for _, s := range cp.opts.Config.Sandboxes {
+	for _, s := range cp.config.Sandboxes {
 		if err := cp.refillWarmPool(ctx, s.Image, s.PoolSizeWarm); err != nil {
 			log.Printf("controlplane: warm pool %s: %v", s.Image, err)
 		}
@@ -127,7 +111,7 @@ func (cp *ControlPlane) deleteExpired(ctx context.Context) {
 	cp.mu.Lock()
 	var expired []*Sandbox
 	for _, sb := range cp.byID {
-		if sb.Claimed && now.Sub(sb.LastSeen) > cp.opts.LeaseTTL {
+		if sb.Claimed && now.Sub(sb.LastSeen) > cp.config.LeaseTTL {
 			expired = append(expired, sb)
 		}
 	}
@@ -172,7 +156,7 @@ func (cp *ControlPlane) sweepNonRunning(ctx context.Context) {
 // Clients must recreate a sandbox if it is gone (NewSandbox), since a restarted
 // control plane cannot account for it.
 func (cp *ControlPlane) reapOrphans(ctx context.Context) {
-	pods, err := cp.kube.CoreV1().Pods(cp.opts.Namespace).List(ctx, metav1.ListOptions{
+	pods, err := cp.kube.CoreV1().Pods(cp.config.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app=lean-sandbox",
 	})
 	if err != nil {
@@ -193,7 +177,7 @@ func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 			continue
 		}
 		log.Printf("controlplane: reaping orphan sandbox pod %s (phase %s)", pod.Name, pod.Status.Phase)
-		if err := cp.kube.CoreV1().Pods(cp.opts.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		if err := cp.kube.CoreV1().Pods(cp.config.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			log.Printf("controlplane: reap %s: %v", pod.Name, err)
 		}
 	}
@@ -282,7 +266,7 @@ func (cp *ControlPlane) DeleteSandbox(ctx context.Context, id api.SandboxID) err
 // refillAfterDelete tops up the warm pool for image without blocking the
 // delete response. Only refills images that are configured as warm.
 func (cp *ControlPlane) refillAfterDelete(image string) {
-	for _, s := range cp.opts.Config.Sandboxes {
+	for _, s := range cp.config.Sandboxes {
 		if s.Image != image {
 			continue
 		}
@@ -367,32 +351,19 @@ func (cp *ControlPlane) refillWarmPool(ctx context.Context, image string, min in
 // createPod builds and creates the sandbox pod (user image + injected agent).
 func (cp *ControlPlane) createPod(ctx context.Context, image string) (*Sandbox, error) {
 	id := api.NewSandboxID()
-	token := randomToken()
-	pod := cp.podSpec(image, id, token)
-	created, err := cp.kube.CoreV1().Pods(cp.opts.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	pod := cp.podSpec(image, id, cp.pubKeyB64)
+	created, err := cp.kube.CoreV1().Pods(cp.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("create pod: %w", err)
 	}
 	return &Sandbox{
-		ID:          id,
-		Image:       image,
-		PodName:     created.Name,
-		Namespace:   created.Namespace,
-		CreatedAt:   time.Now(),
-		LastSeen:    time.Now(),
-		AccessToken: token,
+		ID:        id,
+		Image:     image,
+		PodName:   created.Name,
+		Namespace: created.Namespace,
+		CreatedAt: time.Now(),
+		LastSeen:  time.Now(),
 	}, nil
-}
-
-// randomToken returns a cryptographically random hex string used as the
-// per-sandbox agent token. Each sandbox gets its own, so one client's token
-// cannot authenticate against another client's sandbox.
-func randomToken() string {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		panic(fmt.Sprintf("controlplane: crypto/rand: %v", err))
-	}
-	return hex.EncodeToString(b)
 }
 
 // waitAgentReady polls the pod until Running and the agent /healthz responds.
@@ -418,8 +389,8 @@ func (cp *ControlPlane) waitAgentReady(ctx context.Context, sb *Sandbox) error {
 			if ip == "" {
 				continue
 			}
-			sb.Endpoint = "http://" + ip + ":" + strconv.Itoa(cp.opts.AgentPort)
-			if healthyAgent(ctx, sb.Endpoint, sb.AccessToken) {
+			sb.Endpoint = "http://" + ip + ":" + strconv.Itoa(cp.config.AgentPort)
+			if healthyAgent(ctx, sb.Endpoint, cp.mintJWT(sb.ID)) {
 				return nil
 			}
 		}
