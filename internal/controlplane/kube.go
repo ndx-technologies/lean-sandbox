@@ -77,7 +77,7 @@ func (cp *ControlPlane) podSpec(image string, env []string, id api.SandboxID) *c
 					Image:   image,
 					Command: []string{agentBinPath},
 					Args:    agentArgs(cp.opts.AgentPort, cp.opts.AccessToken),
-					Env: envVars,
+					Env:     envVars,
 					Ports: []corev1.ContainerPort{
 						{Name: "agent", ContainerPort: int32(cp.opts.AgentPort), Protocol: corev1.ProtocolTCP},
 					},
@@ -93,16 +93,7 @@ func (cp *ControlPlane) podSpec(image string, env []string, id api.SandboxID) *c
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
 					},
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("100m"),
-							corev1.ResourceMemory: resource.MustParse("256Mi"),
-						},
-						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("1"),
-							corev1.ResourceMemory: resource.MustParse("1Gi"),
-						},
-					},
+					Resources: cp.resourcesFor(image),
 				},
 			},
 			Volumes: []corev1.Volume{
@@ -129,6 +120,26 @@ func agentArgs(port int, accessToken string) []string {
 		args = append(args, "-access-token", accessToken)
 	}
 	return args
+}
+
+// resourcesFor returns the pod resources for image, using its warm-pool spec
+// when configured, otherwise lean defaults so the warm pool is cheap while idle.
+func (cp *ControlPlane) resourcesFor(image string) corev1.ResourceRequirements {
+	for _, s := range cp.opts.Config.Sandboxes {
+		if s.Image == image && (len(s.Resources.Requests) > 0 || len(s.Resources.Limits) > 0) {
+			return s.Resources
+		}
+	}
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("10m"),
+			corev1.ResourceMemory: resource.MustParse("32Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
 }
 
 // sanitizeLabelValue keeps a label value within DNS-1123 safe chars for

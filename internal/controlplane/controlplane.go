@@ -35,19 +35,13 @@ type Sandbox struct {
 
 // Options configures the control plane.
 type Options struct {
-	Namespace      string        // namespace where sandbox pods live (default "opensandbox")
+	Namespace      string        // namespace where sandbox pods live (default "sandbox")
 	AgentPort      int           // agent container port (default 9090)
 	AgentImage     string        // image carrying the agent binary for injection
 	AccessToken    string        // token handed to agents (also required by SDK)
 	LeaseTTL       time.Duration // sandbox lifetime without KeepAlive (activity-based)
-	WarmImages     []WarmImage   // per-image warm pool target sizes
 	ReconcileEvery time.Duration
-}
-
-// WarmImage declares how many ready pods to keep warm for an image.
-type WarmImage struct {
-	Image string
-	Min   int
+	Config         Config // warm pool + pod resources per image, from CONFIG_PATH
 }
 
 // ControlPlane manages sandbox pods.
@@ -62,7 +56,7 @@ type ControlPlane struct {
 // New builds a ControlPlane from in-cluster or kubeconfig settings.
 func New(opts Options) (*ControlPlane, error) {
 	if opts.Namespace == "" {
-		opts.Namespace = "opensandbox"
+		opts.Namespace = "sandbox"
 	}
 	if opts.AgentPort == 0 {
 		opts.AgentPort = 9090
@@ -133,9 +127,9 @@ func (cp *ControlPlane) reconcile(ctx context.Context) {
 	cp.sweepNonRunning(ctx)
 
 	// 3. Refill warm pool.
-	for _, w := range cp.opts.WarmImages {
-		if err := cp.refillWarmPool(ctx, w.Image, w.Min); err != nil {
-			log.Printf("controlplane: warm pool %s: %v", w.Image, err)
+	for _, s := range cp.opts.Config.Sandboxes {
+		if err := cp.refillWarmPool(ctx, s.Image, s.PoolSizeWarm); err != nil {
+			log.Printf("controlplane: warm pool %s: %v", s.Image, err)
 		}
 	}
 }
@@ -246,17 +240,17 @@ func (cp *ControlPlane) DeleteSandbox(ctx context.Context, id api.SandboxID) err
 // refillAfterDelete tops up the warm pool for image without blocking the
 // delete response. Only refills images that are configured as warm.
 func (cp *ControlPlane) refillAfterDelete(image string) {
-	for _, w := range cp.opts.WarmImages {
-		if w.Image != image {
+	for _, s := range cp.opts.Config.Sandboxes {
+		if s.Image != image {
 			continue
 		}
-		go func(min int) {
+		go func(warm int) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
-			if err := cp.refillWarmPool(ctx, image, min); err != nil {
+			if err := cp.refillWarmPool(ctx, image, warm); err != nil {
 				log.Printf("controlplane: warm refill %s after delete: %v", image, err)
 			}
-		}(w.Min)
+		}(s.PoolSizeWarm)
 		return
 	}
 }
