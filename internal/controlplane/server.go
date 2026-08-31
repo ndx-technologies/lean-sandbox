@@ -34,12 +34,12 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	var req api.CreateSandboxRequest
+	var req api.SandboxRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		writeCPErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
-	sb, err := s.cp.CreateSandbox(r.Context(), req)
+	sb, err := s.cp.Sandbox(r.Context(), req)
 	if err != nil {
 		writeCPErr(w, http.StatusBadGateway, err.Error())
 		return

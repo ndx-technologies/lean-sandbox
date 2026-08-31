@@ -37,8 +37,6 @@ var sessionVarsNeverPersist = map[string]bool{
 
 // Session is a persistent bash session. All methods are safe for concurrent use.
 type Session struct {
-	ID api.SessionID
-
 	mu  sync.Mutex
 	env map[string]string
 	cwd string
@@ -48,7 +46,6 @@ type Session struct {
 // directory (the process cwd); use `cd`/`pwd` to navigate.
 func NewSession() *Session {
 	return &Session{
-		ID:  api.NewSessionID(),
 		env: snapshotEnv(os.Environ()),
 	}
 }

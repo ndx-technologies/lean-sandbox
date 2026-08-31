@@ -7,23 +7,33 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/ndx-technologies/lean-sandbox/api"
 )
 
-// Server is the in-pod agent HTTP server.
+// Server is the in-pod agent HTTP server. Each pod hosts exactly one session,
+// created lazily on the first run.
 type Server struct {
-	sessions *Registry
-	token    string
+	mu      sync.Mutex
+	session *Session
+	token   string
 }
 
 // NewServer returns an agent server. token empty disables auth.
 func NewServer(token string) *Server {
-	return &Server{
-		sessions: NewRegistry(),
-		token:    token,
+	return &Server{token: token}
+}
+
+// getOrCreate returns the pod's single session, creating it on first use.
+func (s *Server) getOrCreate() *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.session == nil {
+		s.session = NewSession()
 	}
+	return s.session
 }
 
 // Handler builds the HTTP routes.
@@ -34,36 +44,17 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	mux.HandleFunc("POST /v1/session", s.handleCreateSession)
-	mux.HandleFunc("POST /v1/session/{id}/run", s.handleRun)
-	mux.HandleFunc("POST /v1/session/{id}/run-stream", s.handleRunStream)
-	mux.HandleFunc("DELETE /v1/session/{id}", s.handleDeleteSession)
+	mux.HandleFunc("POST /v1/run", s.handleRun)
+	mux.HandleFunc("POST /v1/run-stream", s.handleRunStream)
+	mux.HandleFunc("DELETE /v1/session", s.handleDeleteSession)
 	mux.HandleFunc("GET /v1/file", s.handleReadFile)
 	mux.HandleFunc("PUT /v1/file", s.handleWriteFile)
 
 	return authMiddleware(s.token, mux)
 }
 
-func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
-	sess := NewSession()
-	if err := s.sessions.Put(sess.ID, sess); err != nil {
-		writeErr(w, http.StatusConflict, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, api.Session{ID: sess.ID})
-}
-
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
-	id, err := api.SessionIDFromString(r.PathValue("id"))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid session id")
-		return
-	}
-	sess, ok := s.sessions.Get(id)
-	if !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
+	sess := s.getOrCreate()
 	var req api.RunRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
@@ -78,24 +69,14 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, api.RunResponse{
-		SessionID: sess.ID,
-		Stdout:    res.Stdout,
-		Stderr:    res.Stderr,
-		ExitCode:  res.ExitCode,
+		Stdout:   res.Stdout,
+		Stderr:   res.Stderr,
+		ExitCode: res.ExitCode,
 	})
 }
 
 func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
-	id, err := api.SessionIDFromString(r.PathValue("id"))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid session id")
-		return
-	}
-	sess, ok := s.sessions.Get(id)
-	if !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
+	sess := s.getOrCreate()
 	var req api.RunRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
@@ -150,15 +131,9 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
-	id, err := api.SessionIDFromString(r.PathValue("id"))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid session id")
-		return
-	}
-	if sess, ok := s.sessions.Get(id); ok {
-		sess.Close()
-		s.sessions.Delete(id)
-	}
+	s.mu.Lock()
+	s.session = nil
+	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
 

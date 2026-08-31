@@ -17,14 +17,12 @@ cp := &sdk.ControlPlane{
 	APIKey:  "your-api-key",
 }
 
-sb, err := cp.CreateSandbox(ctx, api.CreateSandboxRequest{
+sb, err := cp.NewSandbox(ctx, api.SandboxRequest{
 	Image:          "ubuntu:22.04",
 	TimeoutSeconds: 1800, // 30 min lifetime; renew with KeepAlive
 })
-defer sb.Delete(ctx)
+defer cp.Delete(ctx, sb.Sandbox.ID)
 
-sess, err := sb.NewSession(ctx) 
-
-res, err := sess.Run(ctx, "pwd && echo hi")
+res, err := sb.Run(ctx, "pwd && echo hi")
 fmt.Print(res.Stdout, res.ExitCode)
 ```

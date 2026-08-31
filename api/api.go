@@ -12,40 +12,22 @@ const (
 	APIKeyHeader = "X-Api-Key"
 )
 
-type SessionID struct{ uuid.UUID }
-
-func (s SessionID) IsZero() bool { return s.UUID == uuid.Nil() }
-
-func NewSessionID() SessionID { return SessionID{uuid.New()} }
-
-func SessionIDFromString(s string) (SessionID, error) {
-	u, err := uuid.Parse(s)
-	return SessionID{u}, err
-}
-
-// Session identifies a persistent bash session. It starts in the container's
-// default working directory (the image WORKDIR, or /); navigate with `cd` and
-// check with `pwd`. Env/cwd persist server-side across Run calls.
-type Session struct {
-	ID SessionID `json:"id"`
-}
-
-// RunRequest executes a shell command in the session. There is no per-command
-// timeout on the wire: bound the command with a context deadline and the agent
-// kills the whole process group when the request context is canceled.
+// RunRequest executes a shell command in the sandbox's single session. There is
+// no per-command timeout on the wire: bound the command with a context deadline
+// and the agent kills the whole process group when the request context is
+// canceled.
 type RunRequest struct {
 	Command string   `json:"command"`       // shell command line to execute (e.g. "pwd && echo hi")
 	Env     []string `json:"env,omitempty"` // extra environment (KEY=VALUE pairs), applied for this run only
 }
 
 type RunResponse struct {
-	SessionID SessionID `json:"session_id"`
-	Stdout    string    `json:"stdout"`
-	Stderr    string    `json:"stderr"`
-	ExitCode  int       `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int    `json:"exit_code"`
 }
 
-// StreamEvent is one frame of the SSE stream from /v1/session/{id}/run-stream.
+// StreamEvent is one frame of the SSE stream from /v1/run-stream.
 // Type is one of: "stdout", "stderr", "done". The "done" event carries the
 // final exit code. Error is set only on abnormal termination (e.g. client
 // disconnect / context cancellation killing the process). The session's
@@ -69,7 +51,7 @@ type WriteRequest struct {
 	Content string `json:"content"`
 }
 
-type CreateSandboxRequest struct {
+type SandboxRequest struct {
 	Image          string   `json:"image"`                     // container image
 	Env            []string `json:"env,omitempty"`             // environment (KEY=VALUE pairs)
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"` // sandbox lifetime; the pod is deleted after this. 0 = default.

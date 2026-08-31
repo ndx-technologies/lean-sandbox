@@ -23,19 +23,14 @@ func TestRealSandbox(t *testing.T) {
 	ctx := context.Background()
 	cp := &sdk.ControlPlane{BaseURL: url, APIKey: apiKey, HTTPClient: http.DefaultClient}
 
-	sb, err := cp.CreateSandbox(ctx, api.CreateSandboxRequest{Image: "ubuntu:22.04"})
+	sb, err := cp.NewSandbox(ctx, api.SandboxRequest{Image: "ubuntu:22.04"})
 	if err != nil {
 		t.Fatalf("create sandbox: %v", err)
 	}
 	t.Cleanup(func() { _ = cp.Delete(context.Background(), sb.Sandbox.ID) })
 
-	sess, err := sb.NewSession(ctx)
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
-
 	// Sequential run: stdout + exit code round-trip.
-	res, err := sess.Run(ctx, "echo hello-lean-sandbox && pwd")
+	res, err := sb.Run(ctx, "echo hello-lean-sandbox && pwd")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -54,7 +49,7 @@ func TestRealSandbox(t *testing.T) {
 	for i := range n {
 		wg.Go(func() {
 			defer wg.Done()
-			r, err := sess.Run(ctx, fmt.Sprintf("echo p%d && sleep 0.2", i))
+			r, err := sb.Run(ctx, fmt.Sprintf("echo p%d && sleep 0.2", i))
 			if err != nil {
 				errs <- fmt.Errorf("parallel run %d: %w", i, err)
 				return

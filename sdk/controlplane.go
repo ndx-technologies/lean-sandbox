@@ -17,7 +17,7 @@ type ControlPlane struct {
 	HTTPClient *http.Client
 }
 
-func (s *ControlPlane) CreateSandbox(ctx context.Context, req api.CreateSandboxRequest) (*Sandbox, error) {
+func (s *ControlPlane) NewSandbox(ctx context.Context, req api.SandboxRequest) (*Sandbox, error) {
 	var out api.Sandbox
 	if err := s.doJSON(ctx, http.MethodPost, "/v1/sandboxes", req, &out); err != nil {
 		return nil, err

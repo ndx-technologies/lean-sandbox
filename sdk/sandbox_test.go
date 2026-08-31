@@ -36,23 +36,15 @@ func TestSessionLifecycle(t *testing.T) {
 	sb, _ := startAgent(t)
 	ctx := context.Background()
 
-	sess, err := sb.NewSession(ctx)
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
-	if sess.ID.IsZero() {
-		t.Fatal("empty session id")
-	}
-
 	// Persistence across runs.
-	r1, err := sess.Run(ctx, "cd /tmp && export FOO=bar && pwd && echo hello")
+	r1, err := sb.Run(ctx, "cd /tmp && export FOO=bar && pwd && echo hello")
 	if err != nil {
 		t.Fatalf("run1: %v", err)
 	}
 	if !strings.Contains(r1.Stdout, "hello") {
 		t.Fatalf("run1 stdout=%q", r1.Stdout)
 	}
-	r2, err := sess.Run(ctx, "echo FOO=$FOO; pwd")
+	r2, err := sb.Run(ctx, "echo FOO=$FOO; pwd")
 	if err != nil {
 		t.Fatalf("run2: %v", err)
 	}
@@ -61,7 +53,7 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 
 	// Exit code propagation.
-	r3, err := sess.Run(ctx, "exit 7")
+	r3, err := sb.Run(ctx, "exit 7")
 	if err != nil {
 		t.Fatalf("run3: %v", err)
 	}
@@ -70,7 +62,7 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 
 	// Cleanup.
-	if err := sess.Close(ctx); err != nil {
+	if err := sb.Close(ctx); err != nil {
 		t.Fatalf("close session: %v", err)
 	}
 }
@@ -119,28 +111,20 @@ func TestAgentAuth(t *testing.T) {
 	}
 }
 
-// TestSingleSessionPerPod verifies the agent refuses a second session: one pod
-// = one sandbox = one session, so sessions cannot touch each other's files.
-func TestSingleSessionPerPod(t *testing.T) {
+// TestSessionReopen verifies the sandbox's single session is reused across Run
+// calls and a fresh one can be started after Close.
+func TestSessionReopen(t *testing.T) {
 	sb, _ := startAgent(t)
 	ctx := context.Background()
 
-	sess1, err := sb.NewSession(ctx)
-	if err != nil {
-		t.Fatalf("first session: %v", err)
+	if _, err := sb.Run(ctx, "echo first"); err != nil {
+		t.Fatalf("first run: %v", err)
 	}
-
-	// A second session on the same sandbox must fail.
-	_, err = sb.NewSession(ctx)
-	if err == nil {
-		t.Fatal("expected second session to be rejected")
-	}
-
-	// After closing, a new session is allowed.
-	if err := sess1.Close(ctx); err != nil {
+	if err := sb.Close(ctx); err != nil {
 		t.Fatalf("close session: %v", err)
 	}
-	if _, err := sb.NewSession(ctx); err != nil {
-		t.Fatalf("session after close: %v", err)
+	// After closing, a fresh session can be started on the same sandbox.
+	if _, err := sb.Run(ctx, "echo second"); err != nil {
+		t.Fatalf("run after close: %v", err)
 	}
 }
