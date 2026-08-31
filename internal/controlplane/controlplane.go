@@ -38,13 +38,12 @@ type Sandbox struct {
 
 // Options configures the control plane.
 type Options struct {
+	Config         Config        // warm pool + pod resources per image, from CONFIG_PATH
 	Namespace      string        // namespace where sandbox pods live (default "sandbox")
 	AgentPort      int           // agent container port (default 9090)
 	AgentImage     string        // image carrying the agent binary for injection
-
 	LeaseTTL       time.Duration // sandbox lifetime without KeepAlive (activity-based)
 	ReconcileEvery time.Duration
-	Config         Config // warm pool + pod resources per image, from CONFIG_PATH
 }
 
 // ControlPlane manages sandbox pods.
