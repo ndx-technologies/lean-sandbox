@@ -1,11 +1,3 @@
-// Package agent implements the in-pod sandbox agent: persistent bash
-// sessions, command execution, and file read/write over HTTP.
-//
-// Session persistence model: every Run spawns a fresh `bash -c` that first
-// re-exports the session's persisted environment, cd's to the persisted
-// working directory, runs the requested command, then dumps the resulting
-// env/cwd/exit-code via markers. So `cd` and `export` survive across runs
-// without keeping a long-lived interactive shell process.
 package agent
 
 import (
@@ -13,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/ndx-technologies/lean-sandbox/api"
 )
@@ -29,13 +23,28 @@ const (
 	markerExitPref  = "__LEAN_EXIT__:"
 )
 
-// sessionVarsNeverPersist are shell display vars that should not carry over.
+// sessionVarsNeverPersist are bash's own vars that must not be carried across
+// runs: display/prompt machinery is meaningless in a non-interactive shell,
+// and counters would drift since every run spawns a fresh bash.
 var sessionVarsNeverPersist = map[string]bool{
-	"PS1": true, "PS2": true, "PS3": true, "PS4": true,
-	"PROMPT_COMMAND": true, "_": true, "SHLVL": true,
+	"PS1":            true, // primary prompt — display-only, unused non-interactively
+	"PS2":            true, // continuation prompt — same as PS1
+	"PS3":            true, // select prompt — same as PS1
+	"PS4":            true, // xtrace prompt — same as PS1
+	"PROMPT_COMMAND": true, // command run before each prompt — interactive-only machinery
+	"_":              true, // last argument of previous command — changes every command, stale value useless
+	"SHLVL":          true, // shell nesting counter — would drift +1 on every fresh run
 }
 
 // Session is a persistent bash session. All methods are safe for concurrent use.
+// Session implements the in-pod sandbox agent: persistent bash
+// sessions, command execution, and file read/write over HTTP.
+//
+// Session persistence model: every Run spawns a fresh `bash -c` that first
+// re-exports the session's persisted environment, cd's to the persisted
+// working directory, runs the requested command, then dumps the resulting
+// env/cwd/exit-code via markers. So `cd` and `export` survive across runs
+// without keeping a long-lived interactive shell process.
 type Session struct {
 	mu  sync.Mutex
 	env map[string]string
@@ -44,11 +53,7 @@ type Session struct {
 
 // NewSession creates a session starting in the container's default working
 // directory (the process cwd); use `cd`/`pwd` to navigate.
-func NewSession() *Session {
-	return &Session{
-		env: snapshotEnv(os.Environ()),
-	}
-}
+func NewSession() *Session { return &Session{env: snapshotEnv(os.Environ())} }
 
 // Result is the outcome of a single command run. Cwd/env are persisted on the
 // session server-side but not exposed; read them from stdout if the caller
@@ -61,8 +66,8 @@ type Result struct {
 
 // Run executes command in the session, persisting env/cwd across calls.
 // It is a convenience wrapper around Stream that aggregates all events.
-func (s *Session) Run(ctx context.Context, command string, extraEnv []string) (*Result, error) {
-	events, err := s.Stream(ctx, command, extraEnv)
+func (s *Session) Run(ctx context.Context, command string) (*Result, error) {
+	events, err := s.Stream(ctx, command)
 	if err != nil {
 		return nil, err
 	}
@@ -82,23 +87,19 @@ func (s *Session) Run(ctx context.Context, command string, extraEnv []string) (*
 			}
 		}
 	}
-	return &Result{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		ExitCode: exitCode,
-	}, runErr
+	return &Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCode}, runErr
 }
 
 // Stream runs command and streams stdout/stderr events, ending with a "done"
 // event carrying the exit code. The channel is closed after the "done" event.
 // The session env/cwd are updated server-side when the stream ends. Canceling
 // ctx (e.g. context.WithTimeout) kills the whole process group.
-func (s *Session) Stream(ctx context.Context, command string, extraEnv []string) (<-chan api.StreamEvent, error) {
+func (s *Session) Stream(ctx context.Context, command string) (<-chan api.StreamEvent, error) {
 	if strings.TrimSpace(command) == "" {
 		return nil, errors.New("empty command")
 	}
 	s.mu.Lock()
-	script := buildScript(command, s.env, s.cwd, extraEnv)
+	script := buildScript(command, s.env, s.cwd)
 	s.mu.Unlock()
 
 	scriptFile, err := os.CreateTemp("", "lean-sandbox-*.sh")
@@ -113,7 +114,10 @@ func (s *Session) Stream(ctx context.Context, command string, extraEnv []string)
 	_ = scriptFile.Close()
 
 	cmd := exec.Command("bash", "--noprofile", "--norc", scriptPath)
-	cmd.SysProcAttr = procAttr()
+
+	// procAttr gives the command its own process group so a timeout kill does not
+	// take down the agent itself, and SIGKILL the whole group on cancellation.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
@@ -238,34 +242,16 @@ func (s *Session) pump(
 	}
 	s.mu.Unlock()
 
-	events <- api.StreamEvent{
-		Type:     "done",
-		ExitCode: exitCode,
-	}
+	events <- api.StreamEvent{Type: "done", ExitCode: exitCode}
 }
 
 // Close is a no-op placeholder for the session lifecycle (no long-lived process).
 func (s *Session) Close() {}
 
 // buildScript wraps the user command so env/cwd persist and markers delimit state.
-// Extra env vars are applied for the run but unset before the snapshot dump so
-// they never leak into the persisted session env.
-func buildScript(command string, env map[string]string, cwd string, extraEnv []string) string {
+func buildScript(command string, env map[string]string, cwd string) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
-	extraKeys := make([]string, 0, len(extraEnv))
-	for _, kv := range extraEnv {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue
-		}
-		b.WriteString("export ")
-		b.WriteString(shellEscape(k))
-		b.WriteString("=")
-		b.WriteString(shellEscape(v))
-		b.WriteString("\n")
-		extraKeys = append(extraKeys, k)
-	}
 	for _, k := range sortedKeys(env) {
 		if sessionVarsNeverPersist[k] {
 			continue
@@ -286,12 +272,6 @@ func buildScript(command string, env map[string]string, cwd string, extraEnv []s
 		b.WriteString("\n")
 	}
 	b.WriteString("__lean_exit=$?\n")
-	// Drop per-run extra env from the persisted snapshot.
-	for _, k := range extraKeys {
-		b.WriteString("unset ")
-		b.WriteString(shellEscape(k))
-		b.WriteString("\n")
-	}
 	b.WriteString("printf '%s\\n' \"" + markerEnvStart + "\"\n")
 	b.WriteString("export -p\n")
 	b.WriteString("printf '%s\\n' \"" + markerEnvEnd + "\"\n")
@@ -340,6 +320,24 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // shellEscape single-quotes a value for safe embedding in the script.
-func shellEscape(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+func shellEscape(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// runGroup waits for a started cmd, killing the whole process group if ctx is
+// cancelled first. This matters for `sleep 30`-style commands whose child
+// survives bash being killed by exec.CommandContext alone.
+func runGroup(ctx context.Context, cmd *exec.Cmd) error {
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+				slog.ErrorContext(ctx, "cannot kill", "pid", cmd.Process.Pid, "error", err)
+			}
+		}
+		return <-done
+	}
 }

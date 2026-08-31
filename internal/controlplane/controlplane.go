@@ -1,6 +1,3 @@
-// Package controlplane implements the in-cluster sandbox control plane:
-// a warm pool of ready sandbox Pods per image, claim/release lifecycle,
-// TTL-based cleanup, and the HTTP API consumed by the SDK.
 package controlplane
 
 import (
@@ -16,6 +13,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -47,6 +45,9 @@ type Options struct {
 }
 
 // ControlPlane manages sandbox pods.
+// Controlplane implements the in-cluster sandbox control plane:
+// a warm pool of ready sandbox Pods per image, claim/release lifecycle,
+// TTL-based cleanup, and the HTTP API consumed by the SDK.
 type ControlPlane struct {
 	opts      Options
 	kube      kubernetes.Interface
@@ -151,7 +152,7 @@ func (cp *ControlPlane) sweepNonRunning(ctx context.Context) {
 	for _, sb := range check {
 		pod, err := cp.kube.CoreV1().Pods(sb.Namespace).Get(ctx, sb.PodName, metav1.GetOptions{})
 		if err != nil {
-			if isNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				cp.dropTracked(sb.ID)
 				continue
 			}
@@ -192,7 +193,7 @@ func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 			continue
 		}
 		log.Printf("controlplane: reaping orphan sandbox pod %s (phase %s)", pod.Name, pod.Status.Phase)
-		if err := cp.kube.CoreV1().Pods(cp.opts.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !isNotFound(err) {
+		if err := cp.kube.CoreV1().Pods(cp.opts.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			log.Printf("controlplane: reap %s: %v", pod.Name, err)
 		}
 	}
@@ -217,7 +218,7 @@ func (cp *ControlPlane) NewSandbox(ctx context.Context, req api.SandboxRequest) 
 	}
 	cp.mu.Unlock()
 
-	sb, err := cp.createPod(ctx, req.Image, req.Env)
+	sb, err := cp.createPod(ctx, req.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -345,7 +346,7 @@ func (cp *ControlPlane) refillWarmPool(ctx context.Context, image string, min in
 		return nil
 	}
 	for i := have; i < min; i++ {
-		sb, err := cp.createPod(ctx, image, nil)
+		sb, err := cp.createPod(ctx, image)
 		if err != nil {
 			return err
 		}
@@ -364,10 +365,10 @@ func (cp *ControlPlane) refillWarmPool(ctx context.Context, image string, min in
 }
 
 // createPod builds and creates the sandbox pod (user image + injected agent).
-func (cp *ControlPlane) createPod(ctx context.Context, image string, env []string) (*Sandbox, error) {
+func (cp *ControlPlane) createPod(ctx context.Context, image string) (*Sandbox, error) {
 	id := api.NewSandboxID()
 	token := randomToken()
-	pod := cp.podSpec(image, env, id, token)
+	pod := cp.podSpec(image, id, token)
 	created, err := cp.kube.CoreV1().Pods(cp.opts.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("create pod: %w", err)
@@ -428,7 +429,7 @@ func (cp *ControlPlane) waitAgentReady(ctx context.Context, sb *Sandbox) error {
 // deleteSandbox removes the pod (best-effort; ignore NotFound).
 func (cp *ControlPlane) deleteSandbox(ctx context.Context, sb *Sandbox) error {
 	err := cp.kube.CoreV1().Pods(sb.Namespace).Delete(ctx, sb.PodName, metav1.DeleteOptions{})
-	if err != nil && !isNotFound(err) {
+	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete pod %s: %w", sb.PodName, err)
 	}
 	return nil

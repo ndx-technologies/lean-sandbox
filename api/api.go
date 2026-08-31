@@ -17,8 +17,7 @@ const (
 // and the agent kills the whole process group when the request context is
 // canceled.
 type RunRequest struct {
-	Command string   `json:"command"`       // shell command line to execute (e.g. "pwd && echo hi")
-	Env     []string `json:"env,omitempty"` // extra environment (KEY=VALUE pairs), applied for this run only
+	Command string `json:"command"`
 }
 
 type RunResponse struct {
@@ -52,9 +51,8 @@ type WriteRequest struct {
 }
 
 type SandboxRequest struct {
-	Image          string   `json:"image"`                     // container image
-	Env            []string `json:"env,omitempty"`             // environment (KEY=VALUE pairs)
-	TimeoutSeconds int      `json:"timeout_seconds,omitempty"` // sandbox lifetime; the pod is deleted after this. 0 = default.
+	Image          string `json:"image"`                     // container image
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // sandbox lifetime; the pod is deleted after this. 0 = default.
 }
 
 type SandboxID struct{ uuid.UUID }

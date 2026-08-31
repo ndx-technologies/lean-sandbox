@@ -1,9 +1,10 @@
 package agent
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,8 +14,8 @@ import (
 	"github.com/ndx-technologies/lean-sandbox/api"
 )
 
-// Server is the in-pod agent HTTP server. Each pod hosts exactly one session,
-// created lazily on the first run.
+// Server is the in-pod agent HTTP server.
+// Each pod hosts exactly one session, created lazily on the first run.
 type Server struct {
 	mu      sync.Mutex
 	session *Session
@@ -22,9 +23,7 @@ type Server struct {
 }
 
 // NewServer returns an agent server. token empty disables auth.
-func NewServer(token string) *Server {
-	return &Server{token: token}
-}
+func NewServer(token string) *Server { return &Server{token: token} }
 
 // getOrCreate returns the pod's single session, creating it on first use.
 func (s *Server) getOrCreate() *Session {
@@ -36,7 +35,6 @@ func (s *Server) getOrCreate() *Session {
 	return s.session
 }
 
-// Handler builds the HTTP routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -59,20 +57,25 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
-	res, err := sess.Run(r.Context(), req.Command, req.Env)
+
+	ctx := r.Context()
+
+	res, err := sess.Run(ctx, req.Command)
 	if err != nil {
-		if r.Context().Err() != nil {
+		if ctx.Err() != nil {
 			writeErr(w, http.StatusRequestTimeout, "request canceled")
 			return
 		}
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, api.RunResponse{
-		Stdout:   res.Stdout,
-		Stderr:   res.Stderr,
-		ExitCode: res.ExitCode,
-	})
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	if err := json.MarshalWrite(w, api.RunResponse{Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode}); err != nil {
+		slog.ErrorContext(ctx, "cannot write response", "error", err)
+	}
 }
 
 func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +84,7 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
-	events, err := sess.Stream(r.Context(), req.Command, req.Env)
+	events, err := sess.Stream(r.Context(), req.Command)
 	if err != nil {
 		if r.Context().Err() != nil {
 			writeErr(w, http.StatusRequestTimeout, "request canceled")
@@ -148,7 +151,15 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "read file: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"content": string(data)})
+	ctx := r.Context()
+
+	w.Header().Set("Content-Type", "application/json")
+
+	w.WriteHeader(http.StatusOK)
+
+	if err := json.MarshalWrite(w, map[string]string{"content": string(data)}); err != nil {
+		slog.ErrorContext(ctx, "cannot write response", "error", err)
+	}
 }
 
 func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
@@ -171,24 +182,21 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// --- helpers ---
-
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(v); err != nil {
+	reader := io.LimitReader(r.Body, 1<<20)
+	if err := json.UnmarshalRead(reader, v); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return err
 	}
 	return nil
 }
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
+func writeErr(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, api.Error{Error: msg})
+	if err := json.MarshalWrite(w, api.Error{Error: msg}); err != nil {
+		slog.Error("cannot write error response", "error", err)
+	}
 }
 
 func authMiddleware(token string, next http.Handler) http.Handler {

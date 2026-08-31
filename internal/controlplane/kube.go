@@ -1,12 +1,11 @@
 package controlplane
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
@@ -34,23 +33,15 @@ func buildOutOfClusterConfig() (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", kubeconfig)
 }
 
-func isNotFound(err error) bool { return apierrors.IsNotFound(err) }
-
 // podSpec builds the sandbox pod: user image runs the injected agent binary.
 // An init container copies the static agent binary from AgentImage into a
 // shared emptyDir; the sandbox container then starts it as its entrypoint.
-func (cp *ControlPlane) podSpec(image string, env []string, id api.SandboxID, accessToken string) *corev1.Pod {
-	podName := fmt.Sprintf("lean-sbx-%s", id.String())
+func (cp *ControlPlane) podSpec(image string, id api.SandboxID, accessToken string) *corev1.Pod {
+	podName := "lean-sbx-" + id.String()
 	labels := map[string]string{
 		"app":                        "lean-sandbox",
 		"lean-sandbox.ndx.one/id":    id.String(),
 		"lean-sandbox.ndx.one/image": sanitizeLabelValue(image),
-	}
-	envVars := make([]corev1.EnvVar, 0, len(env))
-	for _, kv := range env {
-		if k, v, ok := splitKV(kv); ok {
-			envVars = append(envVars, corev1.EnvVar{Name: k, Value: v})
-		}
 	}
 
 	return &corev1.Pod{
@@ -77,7 +68,6 @@ func (cp *ControlPlane) podSpec(image string, env []string, id api.SandboxID, ac
 					Image:   image,
 					Command: []string{agentBinPath},
 					Args:    agentArgs(cp.opts.AgentPort, accessToken),
-					Env:     envVars,
 					Ports: []corev1.ContainerPort{
 						{Name: "agent", ContainerPort: int32(cp.opts.AgentPort), Protocol: corev1.ProtocolTCP},
 					},
@@ -107,19 +97,10 @@ func (cp *ControlPlane) podSpec(image string, env []string, id api.SandboxID, ac
 	}
 }
 
-func splitKV(kv string) (string, string, bool) {
-	for i := 0; i < len(kv); i++ {
-		if kv[i] == '=' {
-			return kv[:i], kv[i+1:], true
-		}
-	}
-	return "", "", false
-}
-
 // agentArgs builds the sandbox container args, forwarding the access token so
 // agent pods require the same token the control plane hands out to clients.
 func agentArgs(port int, accessToken string) []string {
-	args := []string{"-listen", fmt.Sprintf(":%d", port)}
+	args := []string{"-listen", ":" + strconv.Itoa(port)}
 	if accessToken != "" {
 		args = append(args, "-access-token", accessToken)
 	}

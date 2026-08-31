@@ -11,7 +11,7 @@ import (
 func TestSessionPersistence(t *testing.T) {
 	s := NewSession()
 
-	r1, err := s.Run(context.Background(), "cd /tmp && export FOO=bar && pwd && echo hello", nil)
+	r1, err := s.Run(context.Background(), "cd /tmp && export FOO=bar && pwd && echo hello")
 	if err != nil {
 		t.Fatalf("run1: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestSessionPersistence(t *testing.T) {
 		t.Fatalf("run1 stdout=%q missing cwd", r1.Stdout)
 	}
 
-	r2, err := s.Run(context.Background(), "echo FOO=$FOO; pwd", nil)
+	r2, err := s.Run(context.Background(), "echo FOO=$FOO; pwd")
 	if err != nil {
 		t.Fatalf("run2: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestSessionExitCode(t *testing.T) {
 		{"exit 42", 42},
 		{"sh -c 'exit 3'", 3},
 	} {
-		r, err := s.Run(context.Background(), tc.cmd, nil)
+		r, err := s.Run(context.Background(), tc.cmd)
 		if err != nil {
 			t.Fatalf("%q: %v", tc.cmd, err)
 		}
@@ -65,7 +65,7 @@ func TestSessionExitCode(t *testing.T) {
 // TestSessionMarkersStripped verifies marker lines never leak to user stdout.
 func TestSessionMarkersStripped(t *testing.T) {
 	s := NewSession()
-	r, err := s.Run(context.Background(), "echo visible", nil)
+	r, err := s.Run(context.Background(), "echo visible")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestSessionTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := s.Run(ctx, "sleep 30", nil)
+	_, err := s.Run(ctx, "sleep 30")
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -93,30 +93,11 @@ func TestSessionTimeout(t *testing.T) {
 	}
 }
 
-// TestSessionExtraEnv verifies per-run env is applied and not persisted.
-func TestSessionExtraEnv(t *testing.T) {
-	s := NewSession()
-	r1, err := s.Run(context.Background(), "echo X=$TMP_ONLY", []string{"TMP_ONLY=yes"})
-	if err != nil {
-		t.Fatalf("run1: %v", err)
-	}
-	if !strings.Contains(r1.Stdout, "X=yes") {
-		t.Fatalf("run1 stdout=%q missing TMP_ONLY", r1.Stdout)
-	}
-	r2, err := s.Run(context.Background(), "echo X=${TMP_ONLY:-none}", nil)
-	if err != nil {
-		t.Fatalf("run2: %v", err)
-	}
-	if !strings.Contains(r2.Stdout, "X=none") {
-		t.Fatalf("run2 stdout=%q, TMP_ONLY should not persist", r2.Stdout)
-	}
-}
-
 // TestSessionDefaultCwd verifies the session lands in the process cwd, not a
 // broken `cd ""`.
 func TestSessionDefaultCwd(t *testing.T) {
 	s := NewSession()
-	r, err := s.Run(context.Background(), "pwd", nil)
+	r, err := s.Run(context.Background(), "pwd")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -129,13 +110,13 @@ func TestSessionDefaultCwd(t *testing.T) {
 func TestSessionConcurrent(t *testing.T) {
 	s := NewSession()
 	done := make(chan error, 8)
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		go func() {
-			_, err := s.Run(context.Background(), "echo concurrent", nil)
+			_, err := s.Run(context.Background(), "echo concurrent")
 			done <- err
 		}()
 	}
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		if err := <-done; err != nil {
 			t.Fatalf("concurrent run: %v", err)
 		}
