@@ -3,7 +3,7 @@ package sdk
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,7 +22,7 @@ func (s *ControlPlane) CreateSandbox(ctx context.Context, req api.CreateSandboxR
 	if err := s.doJSON(ctx, http.MethodPost, "/v1/sandboxes", req, &out); err != nil {
 		return nil, err
 	}
-	return &Sandbox{ControlPlane: s, Sandbox: out, AccessToken: out.AccessToken}, nil
+	return &Sandbox{Sandbox: out}, nil
 }
 
 func (s *ControlPlane) GetSandbox(ctx context.Context, id api.SandboxID) (*Sandbox, error) {
@@ -30,22 +30,20 @@ func (s *ControlPlane) GetSandbox(ctx context.Context, id api.SandboxID) (*Sandb
 	if err := s.doJSON(ctx, http.MethodGet, "/v1/sandboxes/"+id.String(), nil, &out); err != nil {
 		return nil, err
 	}
-	return &Sandbox{ControlPlane: s, Sandbox: out, AccessToken: out.AccessToken}, nil
+	return &Sandbox{Sandbox: out}, nil
 }
 
 // KeepAlive renews the lease on a sandbox so the janitor does not reclaim it
 // while a long-lived conversation (e.g. a chat thread) is still using it.
-// Returns the sandbox, or an error if the lease already expired and the
-// caller must allocate a fresh one.
-func (s *ControlPlane) KeepAlive(ctx context.Context, id api.SandboxID) (*Sandbox, error) {
-	var out api.Sandbox
-	if err := s.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+id.String()+"/keepalive", nil, &out); err != nil {
-		return nil, err
-	}
-	return &Sandbox{ControlPlane: s, Sandbox: out, AccessToken: out.AccessToken}, nil
+func (s *ControlPlane) KeepAlive(ctx context.Context, id api.SandboxID) error {
+	return s.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+id.String()+"/keepalive", nil, nil)
 }
 
-// ListSandboxes returns all sandboxes tracked by the control plane.
+// Delete tears a sandbox down (deletes its pod).
+func (s *ControlPlane) Delete(ctx context.Context, id api.SandboxID) error {
+	return s.doJSON(ctx, http.MethodDelete, "/v1/sandboxes/"+id.String(), nil, nil)
+}
+
 func (s *ControlPlane) ListSandboxes(ctx context.Context) ([]api.Sandbox, error) {
 	var out struct {
 		Sandboxes []api.Sandbox `json:"sandboxes"`
@@ -69,25 +67,30 @@ func (s *ControlPlane) doJSON(ctx context.Context, method, path string, body, ou
 	if err != nil {
 		return err
 	}
+
 	req.Header.Set("Content-Type", "application/json")
 	if s.APIKey != "" {
 		req.Header.Set(api.APIKeyHeader, s.APIKey)
 	}
+
 	resp, err := s.HTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode >= 400 {
 		var e api.Error
-		_ = json.NewDecoder(resp.Body).Decode(&e)
+		_ = json.UnmarshalRead(resp.Body, &e)
 		if e.Error == "" {
 			e.Error = resp.Status
 		}
 		return fmt.Errorf("control plane %s: %s", resp.Status, e.Error)
 	}
+
 	if out == nil {
 		return nil
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+
+	return json.UnmarshalRead(req.Body, &out)
 }

@@ -44,8 +44,8 @@ func (s *Session) Stream(ctx context.Context, command string) (<-chan api.Stream
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if s.Sandbox.AccessToken != "" {
-		httpReq.Header.Set(api.AccessTokenHeader, s.Sandbox.AccessToken)
+	if s.Sandbox.Sandbox.AccessToken != "" {
+		httpReq.Header.Set(api.AccessTokenHeader, s.Sandbox.Sandbox.AccessToken)
 	}
 	resp, err := s.Sandbox.HTTPClient.Do(httpReq)
 	if err != nil {

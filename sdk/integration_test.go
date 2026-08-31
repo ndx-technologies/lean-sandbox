@@ -27,7 +27,7 @@ func TestRealSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create sandbox: %v", err)
 	}
-	t.Cleanup(func() { _ = sb.Delete(context.Background()) })
+	t.Cleanup(func() { _ = cp.Delete(context.Background(), sb.Sandbox.ID) })
 
 	sess, err := sb.NewSession(ctx)
 	if err != nil {

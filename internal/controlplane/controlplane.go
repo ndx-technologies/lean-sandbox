@@ -104,12 +104,23 @@ func (cp *ControlPlane) Run(ctx context.Context) {
 	}
 }
 
-// reconcile refills the warm pool and deletes expired or dead sandboxes.
 func (cp *ControlPlane) reconcile(ctx context.Context) {
+	cp.deleteExpired(ctx)
+	cp.sweepNonRunning(ctx)
+	cp.reapOrphans(ctx)
+
+	for _, s := range cp.opts.Config.Sandboxes {
+		if err := cp.refillWarmPool(ctx, s.Image, s.PoolSizeWarm); err != nil {
+			log.Printf("controlplane: warm pool %s: %v", s.Image, err)
+		}
+	}
+}
+
+// deleteExpired sandboxes whose lease expired: no KeepAlive since LastSeen.
+// (crashed/leaked client, or a chat that went idle past the TTL.)
+func (cp *ControlPlane) deleteExpired(ctx context.Context) {
 	now := time.Now()
 
-	// 1. Delete sandboxes whose lease expired: no KeepAlive since LastSeen.
-	//    (crashed/leaked client, or a chat that went idle past the TTL.)
 	cp.mu.Lock()
 	var expired []*Sandbox
 	for _, sb := range cp.byID {
@@ -118,20 +129,11 @@ func (cp *ControlPlane) reconcile(ctx context.Context) {
 		}
 	}
 	cp.mu.Unlock()
+
 	for _, sb := range expired {
 		log.Printf("controlplane: deleting expired sandbox %s (age %s)", sb.ID, now.Sub(sb.CreatedAt))
 		if err := cp.DeleteSandbox(ctx, sb.ID); err != nil {
 			log.Printf("controlplane: expire %s: %v", sb.ID, err)
-		}
-	}
-
-	// 2. Sweep pods no longer Running (evicted, failed, agent self-exited).
-	cp.sweepNonRunning(ctx)
-
-	// 3. Refill warm pool.
-	for _, s := range cp.opts.Config.Sandboxes {
-		if err := cp.refillWarmPool(ctx, s.Image, s.PoolSizeWarm); err != nil {
-			log.Printf("controlplane: warm pool %s: %v", s.Image, err)
 		}
 	}
 }
@@ -156,6 +158,41 @@ func (cp *ControlPlane) sweepNonRunning(ctx context.Context) {
 		if pod.Status.Phase != corev1.PodRunning {
 			log.Printf("controlplane: sweeping sandbox %s (pod phase %s)", sb.ID, pod.Status.Phase)
 			cp.dropTracked(sb.ID)
+		}
+	}
+}
+
+// reapOrphans deletes sandbox pods that are not tracked by this control plane
+// instance and are no longer Running — e.g. broken or stuck pods left behind
+// by a previous instance after a restart. Running pods are left alone: after a
+// restart they may be active sessions this instance can no longer account for.
+func (cp *ControlPlane) reapOrphans(ctx context.Context) {
+	pods, err := cp.kube.CoreV1().Pods(cp.opts.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app=lean-sandbox",
+	})
+	if err != nil {
+		log.Printf("controlplane: list sandbox pods: %v", err)
+		return
+	}
+	cp.mu.RLock()
+	tracked := make(map[string]bool, len(cp.byID))
+	for _, sb := range cp.byID {
+		tracked[sb.PodName] = true
+	}
+	cp.mu.RUnlock()
+	for _, pod := range pods.Items {
+		if tracked[pod.Name] {
+			continue
+		}
+		if pod.Status.Phase == corev1.PodRunning {
+			continue
+		}
+		if time.Since(pod.CreationTimestamp.Time) < cp.opts.Config.OrphanReapGrace {
+			continue
+		}
+		log.Printf("controlplane: reaping orphan sandbox pod %s (phase %s)", pod.Name, pod.Status.Phase)
+		if err := cp.kube.CoreV1().Pods(cp.opts.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !isNotFound(err) {
+			log.Printf("controlplane: reap %s: %v", pod.Name, err)
 		}
 	}
 }

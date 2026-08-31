@@ -13,25 +13,8 @@ import (
 
 // Sandbox is a handle to a created sandbox, bound to the agent endpoint.
 type Sandbox struct {
-	ControlPlane *ControlPlane
-	Sandbox      api.Sandbox
-	AccessToken  string
-	HTTPClient   *http.Client
-}
-
-// Delete tears the sandbox down (deletes the pod).
-func (sb *Sandbox) Delete(ctx context.Context) error {
-	return sb.ControlPlane.doJSON(ctx, http.MethodDelete, "/v1/sandboxes/"+sb.Sandbox.ID.String(), nil, nil)
-}
-
-// KeepAlive renews the sandbox lease. Safe to call periodically while a
-// long-lived conversation uses this sandbox.
-func (sb *Sandbox) KeepAlive(ctx context.Context) error {
-	if sb.ControlPlane == nil {
-		return fmt.Errorf("sandbox not bound to a control plane")
-	}
-	_, err := sb.ControlPlane.KeepAlive(ctx, sb.Sandbox.ID)
-	return err
+	Sandbox    api.Sandbox
+	HTTPClient *http.Client
 }
 
 // NewSession opens a persistent bash session on the sandbox agent. It starts
@@ -59,8 +42,8 @@ func (sb *Sandbox) do(ctx context.Context, method, path string, body, out any) e
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if sb.AccessToken != "" {
-		req.Header.Set(api.AccessTokenHeader, sb.AccessToken)
+	if sb.Sandbox.AccessToken != "" {
+		req.Header.Set(api.AccessTokenHeader, sb.Sandbox.AccessToken)
 	}
 	resp, err := sb.HTTPClient.Do(req)
 	if err != nil {

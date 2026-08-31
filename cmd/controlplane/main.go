@@ -34,6 +34,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("load config %s: %v", configPath, err)
 		}
+		cfg = cfg.WithDefaults()
 		options.Config = cfg
 	}
 
