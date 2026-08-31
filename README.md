@@ -29,6 +29,8 @@ fmt.Print(res.Stdout, res.ExitCode)
 
 ## Benchmarks
 
+Cold Pod start with cached image on Node ~5s, bound by native K8S Pod startup time.
+
 ```
 === RUN   TestTiming
     timing_test.go:26: claim (NewSandbox):      29.326873ms
