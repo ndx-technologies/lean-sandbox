@@ -5,6 +5,8 @@ package controlplane
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -23,14 +25,15 @@ import (
 
 // Sandbox is the control plane's record of a sandbox pod.
 type Sandbox struct {
-	ID        api.SandboxID
-	Image     string
-	PodName   string
-	Namespace string
-	Endpoint  string // podIP:agentPort
-	CreatedAt time.Time
-	LastSeen  time.Time // renewed by KeepAlive; drives the lease TTL
-	Claimed   bool      // false = warm pool member, true = handed to a client
+	ID          api.SandboxID
+	Image       string
+	PodName     string
+	Namespace   string
+	Endpoint    string // podIP:agentPort
+	AccessToken string // per-sandbox token required by the agent
+	CreatedAt   time.Time
+	LastSeen    time.Time // renewed by KeepAlive; drives the lease TTL
+	Claimed     bool      // false = warm pool member, true = handed to a client
 }
 
 // Options configures the control plane.
@@ -38,7 +41,7 @@ type Options struct {
 	Namespace      string        // namespace where sandbox pods live (default "sandbox")
 	AgentPort      int           // agent container port (default 9090)
 	AgentImage     string        // image carrying the agent binary for injection
-	AccessToken    string        // token handed to agents (also required by SDK)
+
 	LeaseTTL       time.Duration // sandbox lifetime without KeepAlive (activity-based)
 	ReconcileEvery time.Duration
 	Config         Config // warm pool + pod resources per image, from CONFIG_PATH
@@ -325,19 +328,32 @@ func (cp *ControlPlane) refillWarmPool(ctx context.Context, image string, min in
 // createPod builds and creates the sandbox pod (user image + injected agent).
 func (cp *ControlPlane) createPod(ctx context.Context, image string, env []string) (*Sandbox, error) {
 	id := api.NewSandboxID()
-	pod := cp.podSpec(image, env, id)
+	token := randomToken()
+	pod := cp.podSpec(image, env, id, token)
 	created, err := cp.kube.CoreV1().Pods(cp.opts.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("create pod: %w", err)
 	}
 	return &Sandbox{
-		ID:        id,
-		Image:     image,
-		PodName:   created.Name,
-		Namespace: created.Namespace,
-		CreatedAt: time.Now(),
-		LastSeen:  time.Now(),
+		ID:          id,
+		Image:       image,
+		PodName:     created.Name,
+		Namespace:   created.Namespace,
+		CreatedAt:   time.Now(),
+		LastSeen:    time.Now(),
+		AccessToken: token,
 	}, nil
+}
+
+// randomToken returns a cryptographically random hex string used as the
+// per-sandbox agent token. Each sandbox gets its own, so one client's token
+// cannot authenticate against another client's sandbox.
+func randomToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("controlplane: crypto/rand: %v", err))
+	}
+	return hex.EncodeToString(b)
 }
 
 // waitAgentReady polls the pod until Running and the agent /healthz responds.
@@ -364,7 +380,7 @@ func (cp *ControlPlane) waitAgentReady(ctx context.Context, sb *Sandbox) error {
 				continue
 			}
 			sb.Endpoint = "http://" + ip + ":" + strconv.Itoa(cp.opts.AgentPort)
-			if healthyAgent(ctx, sb.Endpoint, cp.opts.AccessToken) {
+			if healthyAgent(ctx, sb.Endpoint, sb.AccessToken) {
 				return nil
 			}
 		}

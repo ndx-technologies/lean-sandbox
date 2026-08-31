@@ -25,7 +25,6 @@ func main() {
 	flag.StringVar(&options.Namespace, "namespace", "opensandbox", "namespace for sandbox pods")
 	flag.IntVar(&options.AgentPort, "agent-port", 9090, "agent container port")
 	flag.StringVar(&options.AgentImage, "agent-image", "", "image carrying the agent binary (required)")
-	flag.StringVar(&options.AccessToken, "access-token", "", "token handed to agents (also required by SDK)")
 	flag.DurationVar(&options.LeaseTTL, "ttl", 15*time.Minute, "sandbox lease: reclaimed when no KeepAlive for this long")
 	flag.StringVar(&configPath, "config", os.Getenv("CONFIG_PATH"), "path to config")
 	flag.Parse()

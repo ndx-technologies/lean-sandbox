@@ -39,7 +39,7 @@ func isNotFound(err error) bool { return apierrors.IsNotFound(err) }
 // podSpec builds the sandbox pod: user image runs the injected agent binary.
 // An init container copies the static agent binary from AgentImage into a
 // shared emptyDir; the sandbox container then starts it as its entrypoint.
-func (cp *ControlPlane) podSpec(image string, env []string, id api.SandboxID) *corev1.Pod {
+func (cp *ControlPlane) podSpec(image string, env []string, id api.SandboxID, accessToken string) *corev1.Pod {
 	podName := fmt.Sprintf("lean-sbx-%s", id.String())
 	labels := map[string]string{
 		"app":                        "lean-sandbox",
@@ -76,7 +76,7 @@ func (cp *ControlPlane) podSpec(image string, env []string, id api.SandboxID) *c
 					Name:    "sandbox",
 					Image:   image,
 					Command: []string{agentBinPath},
-					Args:    agentArgs(cp.opts.AgentPort, cp.opts.AccessToken),
+					Args:    agentArgs(cp.opts.AgentPort, accessToken),
 					Env:     envVars,
 					Ports: []corev1.ContainerPort{
 						{Name: "agent", ContainerPort: int32(cp.opts.AgentPort), Protocol: corev1.ProtocolTCP},

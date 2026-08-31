@@ -88,10 +88,11 @@ func SandboxIDFromString(s string) (SandboxID, error) {
 
 // Sandbox is the control plane's view of a created sandbox.
 type Sandbox struct {
-	ID       SandboxID `json:"id"`
-	Image    string    `json:"image"`
-	Status   string    `json:"status"`   // Pending | Running | Succeeded | Failed | Unknown
-	Endpoint string    `json:"endpoint"` // host:port of the agent inside the pod
+	ID          SandboxID `json:"id"`
+	Image       string    `json:"image"`
+	Status      string    `json:"status"`   // Pending | Running | Succeeded | Failed | Unknown
+	Endpoint    string    `json:"endpoint"` // host:port of the agent inside the pod
+	AccessToken string    `json:"access_token,omitempty"` // token to authenticate to the agent
 }
 
 // Error returned by agent and control plane on failure.

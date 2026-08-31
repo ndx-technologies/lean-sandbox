@@ -99,10 +99,11 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (sb *Sandbox) toAPI() api.Sandbox {
 	return api.Sandbox{
-		ID:       sb.ID,
-		Image:    sb.Image,
-		Status:   "Running",
-		Endpoint: sb.Endpoint,
+		ID:          sb.ID,
+		Image:       sb.Image,
+		Status:      "Running",
+		Endpoint:    sb.Endpoint,
+		AccessToken: sb.AccessToken,
 	}
 }
 

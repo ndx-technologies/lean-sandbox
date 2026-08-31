@@ -17,10 +17,7 @@ func startAgent(t *testing.T) (*sdk.Sandbox, string) {
 	t.Helper()
 	srv := httptest.NewServer(agent.NewServer("").Handler())
 	t.Cleanup(srv.Close)
-	return &sdk.Sandbox{
-		Sandbox:    api.Sandbox{Endpoint: srv.URL},
-		HTTPClient: srv.Client(),
-	}, srv.URL
+	return &sdk.Sandbox{Sandbox: api.Sandbox{Endpoint: srv.URL}, HTTPClient: srv.Client()}, srv.URL
 }
 
 func TestAgentHealthz(t *testing.T) {
