@@ -197,8 +197,9 @@ func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 	}
 }
 
-// Sandbox claims a warm pod for image, or cold-creates one.
-func (cp *ControlPlane) Sandbox(ctx context.Context, req api.SandboxRequest) (*Sandbox, error) {
+// NewSandbox claims a warm pod for image, or cold-creates one. The returned
+// sandbox is ready to use: it has an id and a token to talk to its agent.
+func (cp *ControlPlane) NewSandbox(ctx context.Context, req api.SandboxRequest) (*Sandbox, error) {
 	if req.Image == "" {
 		return nil, fmt.Errorf("image required")
 	}

@@ -39,7 +39,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeCPErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
-	sb, err := s.cp.Sandbox(r.Context(), req)
+	sb, err := s.cp.NewSandbox(r.Context(), req)
 	if err != nil {
 		writeCPErr(w, http.StatusBadGateway, err.Error())
 		return
