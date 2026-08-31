@@ -121,6 +121,10 @@ func apiKeyMiddleware(key string, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if r.Header.Get(api.APIKeyHeader) != key {
 			writeCPErr(w, http.StatusUnauthorized, "unauthorized")
 			return
