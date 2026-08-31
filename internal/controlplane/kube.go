@@ -83,11 +83,14 @@ func (cp *ControlPlane) podSpec(image string, env []string, id api.SandboxID) *c
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "agent-bin", MountPath: agentMountPath},
+						{Name: "tmp", MountPath: "/tmp"},
 					},
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: new(false),
 						Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 						RunAsNonRoot:             new(true),
+						RunAsUser:                new(int64(1000)),
+						RunAsGroup:               new(int64(1000)),
 						ReadOnlyRootFilesystem:   new(true),
 						SeccompProfile: &corev1.SeccompProfile{
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -98,6 +101,7 @@ func (cp *ControlPlane) podSpec(image string, env []string, id api.SandboxID) *c
 			},
 			Volumes: []corev1.Volume{
 				{Name: "agent-bin", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			},
 		},
 	}
