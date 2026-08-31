@@ -48,11 +48,12 @@ type Options struct {
 
 // ControlPlane manages sandbox pods.
 type ControlPlane struct {
-	opts    Options
-	kube    kubernetes.Interface
-	mu      sync.RWMutex
-	byID    map[api.SandboxID]*Sandbox
-	byImage map[string][]*Sandbox // warm (unclaimed) sandboxes per image
+	opts      Options
+	kube      kubernetes.Interface
+	mu        sync.RWMutex
+	byID      map[api.SandboxID]*Sandbox
+	byImage   map[string][]*Sandbox // warm (unclaimed) sandboxes per image
+	startedAt time.Time             // this instance's start; older pods are orphans
 }
 
 // New builds a ControlPlane from in-cluster or kubeconfig settings.
@@ -83,10 +84,11 @@ func New(opts Options) (*ControlPlane, error) {
 	}
 
 	return &ControlPlane{
-		opts:    opts,
-		kube:    kube,
-		byID:    map[api.SandboxID]*Sandbox{},
-		byImage: map[string][]*Sandbox{},
+		opts:      opts,
+		kube:      kube,
+		byID:      map[api.SandboxID]*Sandbox{},
+		byImage:   map[string][]*Sandbox{},
+		startedAt: time.Now(),
 	}, nil
 }
 
@@ -163,9 +165,11 @@ func (cp *ControlPlane) sweepNonRunning(ctx context.Context) {
 }
 
 // reapOrphans deletes sandbox pods that are not tracked by this control plane
-// instance and are no longer Running — e.g. broken or stuck pods left behind
-// by a previous instance after a restart. Running pods are left alone: after a
-// restart they may be active sessions this instance can no longer account for.
+// instance and were created before this instance started — i.e. everything left
+// over from a previous instance after a restart, warm or active. Pods created
+// by this instance (registered, or still provisioning) are never touched.
+// Clients must recreate a sandbox if it is gone (NewSandbox), since a restarted
+// control plane cannot account for it.
 func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 	pods, err := cp.kube.CoreV1().Pods(cp.opts.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app=lean-sandbox",
@@ -184,10 +188,7 @@ func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 		if tracked[pod.Name] {
 			continue
 		}
-		if pod.Status.Phase == corev1.PodRunning {
-			continue
-		}
-		if time.Since(pod.CreationTimestamp.Time) < cp.opts.Config.OrphanReapGrace {
+		if !pod.CreationTimestamp.Time.Before(cp.startedAt) {
 			continue
 		}
 		log.Printf("controlplane: reaping orphan sandbox pod %s (phase %s)", pod.Name, pod.Status.Phase)
