@@ -22,7 +22,7 @@ func (s *ControlPlane) CreateSandbox(ctx context.Context, req api.CreateSandboxR
 	if err := s.doJSON(ctx, http.MethodPost, "/v1/sandboxes", req, &out); err != nil {
 		return nil, err
 	}
-	return &Sandbox{Sandbox: out}, nil
+	return &Sandbox{Sandbox: out, HTTPClient: s.HTTPClient}, nil
 }
 
 func (s *ControlPlane) GetSandbox(ctx context.Context, id api.SandboxID) (*Sandbox, error) {
@@ -30,7 +30,7 @@ func (s *ControlPlane) GetSandbox(ctx context.Context, id api.SandboxID) (*Sandb
 	if err := s.doJSON(ctx, http.MethodGet, "/v1/sandboxes/"+id.String(), nil, &out); err != nil {
 		return nil, err
 	}
-	return &Sandbox{Sandbox: out}, nil
+	return &Sandbox{Sandbox: out, HTTPClient: s.HTTPClient}, nil
 }
 
 // KeepAlive renews the lease on a sandbox so the janitor does not reclaim it
@@ -92,5 +92,5 @@ func (s *ControlPlane) doJSON(ctx context.Context, method, path string, body, ou
 		return nil
 	}
 
-	return json.UnmarshalRead(req.Body, &out)
+	return json.UnmarshalRead(resp.Body, &out)
 }
