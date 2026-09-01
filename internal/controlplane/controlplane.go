@@ -183,8 +183,8 @@ func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 	}
 }
 
-// NewSandbox claims a warm pod for image, or cold-creates one. The returned
-// sandbox is ready to use: it has an id and a token to talk to its agent.
+// NewSandbox claims a warm pod for image, or cold-creates one.
+// The returned sandbox is ready to use.
 func (cp *ControlPlane) NewSandbox(ctx context.Context, req api.SandboxRequest) (*Sandbox, error) {
 	if req.Image == "" {
 		return nil, fmt.Errorf("image required")
@@ -240,8 +240,6 @@ func (cp *ControlPlane) KeepAlive(ctx context.Context, id api.SandboxID) (*Sandb
 	return sb, nil
 }
 
-// DeleteSandbox removes a sandbox pod (explicit teardown) and immediately
-// refills the warm pool for that image so the next Sandbox stays fast.
 func (cp *ControlPlane) DeleteSandbox(ctx context.Context, id api.SandboxID) error {
 	cp.mu.Lock()
 	sb, ok := cp.byID[id]
@@ -278,7 +276,6 @@ func (cp *ControlPlane) refillAfterDelete(image string) {
 	}
 }
 
-// ListSandboxes returns all tracked sandboxes (useful for admin/debug).
 func (cp *ControlPlane) ListSandboxes(ctx context.Context) []*Sandbox {
 	cp.mu.RLock()
 	defer cp.mu.RUnlock()
