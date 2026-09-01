@@ -105,7 +105,7 @@ func TestReconcileKeepsActiveSandbox(t *testing.T) {
 	id := api.NewSandboxID()
 	sb := registerClaimed(cp, id, "ubuntu:22.04") // LastSeen = now
 
-	// Provide the matching Running pod so sweepNonRunning keeps it.
+	// Seed the matching Running pod (informational; reconcile no longer sweeps).
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: sb.PodName, Namespace: sb.Namespace},
 		Status:     corev1.PodStatus{Phase: corev1.PodRunning, PodIP: "10.0.0.1"},

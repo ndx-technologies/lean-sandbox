@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -66,6 +67,18 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string
 					Args:    agentArgs(cp.config.AgentPort, id.String(), pubKeyB64),
 					Ports: []corev1.ContainerPort{
 						{Name: "agent", ContainerPort: int32(cp.config.AgentPort), Protocol: corev1.ProtocolTCP},
+					},
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/healthz",
+								Port: intstr.FromInt(cp.config.AgentPort),
+							},
+						},
+						InitialDelaySeconds: 2,
+						PeriodSeconds:       5,
+						TimeoutSeconds:      3,
+						FailureThreshold:    5,
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "agent-bin", MountPath: agentMountPath},

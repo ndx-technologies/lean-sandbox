@@ -5,6 +5,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -49,7 +50,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("lean-sandbox agent listening on %s", addr)
+		slog.Info("lean-sandbox agent listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("agent server: %v", err)
 		}

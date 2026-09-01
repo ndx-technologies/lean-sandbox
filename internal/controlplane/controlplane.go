@@ -4,14 +4,12 @@ import (
 	"context"
 	"crypto/rsa"
 	"fmt"
-	"log"
-	"net/http"
+	"log/slog"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -77,8 +75,10 @@ func New(config Config) (*ControlPlane, error) {
 	}, nil
 }
 
-// Run starts background loops: warm-pool reconcile and TTL janitor.
+// Run starts background loops: pod event listener, warm-pool reconcile and TTL janitor.
 func (cp *ControlPlane) Run(ctx context.Context) {
+	go cp.watchPods(ctx)
+
 	ticker := time.NewTicker(cp.config.ReconcileEvery)
 	defer ticker.Stop()
 	for {
@@ -93,12 +93,11 @@ func (cp *ControlPlane) Run(ctx context.Context) {
 
 func (cp *ControlPlane) reconcile(ctx context.Context) {
 	cp.deleteExpired(ctx)
-	cp.sweepNonRunning(ctx)
 	cp.reapOrphans(ctx)
 
 	for _, s := range cp.config.Sandboxes {
 		if err := cp.refillWarmPool(ctx, s.Image, s.PoolSizeWarm); err != nil {
-			log.Printf("controlplane: warm pool %s: %v", s.Image, err)
+			slog.ErrorContext(ctx, "warm pool refill", "image", s.Image, "error", err)
 		}
 	}
 }
@@ -118,33 +117,9 @@ func (cp *ControlPlane) deleteExpired(ctx context.Context) {
 	cp.mu.Unlock()
 
 	for _, sb := range expired {
-		log.Printf("controlplane: deleting expired sandbox %s (age %s)", sb.ID, now.Sub(sb.CreatedAt))
+		slog.InfoContext(ctx, "deleting expired sandbox", "sandbox_id", sb.ID, "age", now.Sub(sb.CreatedAt))
 		if err := cp.DeleteSandbox(ctx, sb.ID); err != nil {
-			log.Printf("controlplane: expire %s: %v", sb.ID, err)
-		}
-	}
-}
-
-// sweepNonRunning removes tracked sandboxes whose pod is not Running.
-func (cp *ControlPlane) sweepNonRunning(ctx context.Context) {
-	cp.mu.RLock()
-	var check []*Sandbox
-	for _, sb := range cp.byID {
-		check = append(check, sb)
-	}
-	cp.mu.RUnlock()
-	for _, sb := range check {
-		pod, err := cp.kube.CoreV1().Pods(sb.Namespace).Get(ctx, sb.PodName, metav1.GetOptions{})
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				cp.dropTracked(sb.ID)
-				continue
-			}
-			continue
-		}
-		if pod.Status.Phase != corev1.PodRunning {
-			log.Printf("controlplane: sweeping sandbox %s (pod phase %s)", sb.ID, pod.Status.Phase)
-			cp.dropTracked(sb.ID)
+			slog.ErrorContext(ctx, "expire sandbox", "sandbox_id", sb.ID, "error", err)
 		}
 	}
 }
@@ -160,7 +135,7 @@ func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 		LabelSelector: "app=lean-sandbox",
 	})
 	if err != nil {
-		log.Printf("controlplane: list sandbox pods: %v", err)
+		slog.ErrorContext(ctx, "list sandbox pods", "error", err)
 		return
 	}
 	cp.mu.RLock()
@@ -176,9 +151,9 @@ func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 		if !pod.CreationTimestamp.Time.Before(cp.startedAt) {
 			continue
 		}
-		log.Printf("controlplane: reaping orphan sandbox pod %s (phase %s)", pod.Name, pod.Status.Phase)
+		slog.InfoContext(ctx, "reaping orphan sandbox pod", "pod", pod.Name, "phase", pod.Status.Phase)
 		if err := cp.kube.CoreV1().Pods(cp.config.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			log.Printf("controlplane: reap %s: %v", pod.Name, err)
+			slog.ErrorContext(ctx, "reap pod", "pod", pod.Name, "error", err)
 		}
 	}
 }
@@ -197,7 +172,7 @@ func (cp *ControlPlane) NewSandbox(ctx context.Context, req api.SandboxRequest) 
 		sb.Claimed = true
 		sb.LastSeen = time.Now()
 		cp.mu.Unlock()
-		log.Printf("controlplane: claimed warm sandbox %s for %s", sb.ID, req.Image)
+		slog.InfoContext(ctx, "claimed warm sandbox", "sandbox_id", sb.ID, "image", req.Image)
 		return sb, nil
 	}
 	cp.mu.Unlock()
@@ -206,7 +181,7 @@ func (cp *ControlPlane) NewSandbox(ctx context.Context, req api.SandboxRequest) 
 	if err != nil {
 		return nil, err
 	}
-	if err := cp.waitAgentReady(ctx, sb); err != nil {
+	if err := cp.waitPodReady(ctx, sb); err != nil {
 		_ = cp.deleteSandbox(ctx, sb)
 		return nil, err
 	}
@@ -269,7 +244,7 @@ func (cp *ControlPlane) refillAfterDelete(image string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 			if err := cp.refillWarmPool(ctx, image, warm); err != nil {
-				log.Printf("controlplane: warm refill %s after delete: %v", image, err)
+				slog.ErrorContext(ctx, "warm refill after delete", "image", image, "error", err)
 			}
 		}(s.PoolSizeWarm)
 		return
@@ -328,7 +303,7 @@ func (cp *ControlPlane) refillWarmPool(ctx context.Context, image string, min in
 		if err != nil {
 			return err
 		}
-		if err := cp.waitAgentReady(ctx, sb); err != nil {
+		if err := cp.waitPodReady(ctx, sb); err != nil {
 			_ = cp.deleteSandbox(ctx, sb)
 			return err
 		}
@@ -337,7 +312,7 @@ func (cp *ControlPlane) refillWarmPool(ctx context.Context, image string, min in
 		cp.mu.Lock()
 		cp.byImage[image] = append(cp.byImage[image], sb)
 		cp.mu.Unlock()
-		log.Printf("controlplane: warmed sandbox %s for %s", sb.ID, image)
+		slog.InfoContext(ctx, "warmed sandbox", "sandbox_id", sb.ID, "image", image)
 	}
 	return nil
 }
@@ -360,8 +335,10 @@ func (cp *ControlPlane) createPod(ctx context.Context, image string) (*Sandbox, 
 	}, nil
 }
 
-// waitAgentReady polls the pod until Running and the agent /healthz responds.
-func (cp *ControlPlane) waitAgentReady(ctx context.Context, sb *Sandbox) error {
+// waitPodReady blocks until k8s reports the pod Ready (readiness probe -> the
+// agent's anonymous /healthz), then records the pod IP endpoint. Native
+// readiness replaces the old in-process /healthz poll.
+func (cp *ControlPlane) waitPodReady(ctx context.Context, sb *Sandbox) error {
 	timeout := time.After(3 * time.Minute)
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
@@ -370,13 +347,13 @@ func (cp *ControlPlane) waitAgentReady(ctx context.Context, sb *Sandbox) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timeout:
-			return fmt.Errorf("sandbox %s agent not ready in time", sb.ID)
+			return fmt.Errorf("sandbox %s not ready in time", sb.ID)
 		case <-tick.C:
 			pod, err := cp.kube.CoreV1().Pods(sb.Namespace).Get(ctx, sb.PodName, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf("get pod: %w", err)
 			}
-			if pod.Status.Phase != corev1.PodRunning {
+			if !podReady(pod) {
 				continue
 			}
 			ip := pod.Status.PodIP
@@ -384,9 +361,7 @@ func (cp *ControlPlane) waitAgentReady(ctx context.Context, sb *Sandbox) error {
 				continue
 			}
 			sb.Endpoint = "http://" + ip + ":" + strconv.Itoa(cp.config.AgentPort)
-			if healthyAgent(ctx, sb.Endpoint, cp.mintJWT(sb.ID)) {
-				return nil
-			}
+			return nil
 		}
 	}
 }
@@ -409,21 +384,4 @@ func (cp *ControlPlane) WarmStatus() map[string]int {
 		out[img] = len(list)
 	}
 	return out
-}
-
-func healthyAgent(ctx context.Context, endpoint, token string) bool {
-	c := &http.Client{Timeout: 3 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/healthz", nil)
-	if err != nil {
-		return false
-	}
-	if token != "" {
-		req.Header.Set(api.AccessTokenHeader, token)
-	}
-	resp, err := c.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
 }

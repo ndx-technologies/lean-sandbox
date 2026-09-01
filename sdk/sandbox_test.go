@@ -140,29 +140,38 @@ func TestAgentAuth(t *testing.T) {
 	srv := httptest.NewServer(mustAgent(t, sandboxID, pubB64).Handler())
 	t.Cleanup(srv.Close)
 
-	// No token -> 401.
+	// /healthz is anonymous on purpose: it backs the k8s readiness probe, and
+	// kubelet probes carry no app token.
 	resp, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("no-token status=%d want 401", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz status=%d want 200 (anonymous)", resp.StatusCode)
+	}
+
+	// Everything else is gated by the per-sandbox token (test on /v1/file).
+	const endpoint = "/v1/file"
+
+	// No token -> 401.
+	if got := getStatus(t, srv.URL+endpoint, ""); got != http.StatusUnauthorized {
+		t.Fatalf("no-token status=%d want 401", got)
 	}
 
 	// Wrong sandbox id -> 401.
-	if got := getStatus(t, srv.URL+"/healthz", mustSign(t, priv, api.NewSandboxID().String(), time.Hour)); got != http.StatusUnauthorized {
+	if got := getStatus(t, srv.URL+endpoint, mustSign(t, priv, api.NewSandboxID().String(), time.Hour)); got != http.StatusUnauthorized {
 		t.Fatalf("wrong-sub status=%d want 401", got)
 	}
 
 	// Expired -> 401.
-	if got := getStatus(t, srv.URL+"/healthz", mustSign(t, priv, sandboxID.String(), -time.Minute)); got != http.StatusUnauthorized {
+	if got := getStatus(t, srv.URL+endpoint, mustSign(t, priv, sandboxID.String(), -time.Minute)); got != http.StatusUnauthorized {
 		t.Fatalf("expired status=%d want 401", got)
 	}
 
-	// Valid -> 200.
-	if got := getStatus(t, srv.URL+"/healthz", mustSign(t, priv, sandboxID.String(), time.Hour)); got != http.StatusOK {
-		t.Fatalf("valid status=%d want 200", got)
+	// Valid token passes auth; handler then rejects the missing path -> 400.
+	if got := getStatus(t, srv.URL+endpoint, mustSign(t, priv, sandboxID.String(), time.Hour)); got != http.StatusBadRequest {
+		t.Fatalf("valid status=%d want 400", got)
 	}
 }
 

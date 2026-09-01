@@ -1,7 +1,7 @@
 package controlplane
 
 import (
-	"log"
+	"log/slog"
 
 	"github.com/ndx-technologies/lean-sandbox/api"
 	"github.com/ndx-technologies/lean-sandbox/internal/jwt"
@@ -14,7 +14,7 @@ import (
 func (cp *ControlPlane) mintJWT(id api.SandboxID) string {
 	tok, err := jwt.Sign(cp.signingKey, id.String(), cp.config.TokenTTL)
 	if err != nil {
-		log.Printf("controlplane: mint jwt: %v", err)
+		slog.Error("mint jwt", "error", err)
 		return ""
 	}
 	return tok

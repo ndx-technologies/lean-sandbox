@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -54,7 +55,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
-		log.Printf("lean-sandbox controlplane listening on %s", addr)
+		slog.Info("lean-sandbox controlplane listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("controlplane server: %v", err)
 		}
