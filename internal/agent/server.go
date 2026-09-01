@@ -3,7 +3,6 @@ package agent
 import (
 	"crypto/rsa"
 	"encoding/json/v2"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -66,14 +65,14 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
-	sess := s.getOrCreate()
 	var req api.RunRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		return
+	if err := json.UnmarshalRead(io.LimitReader(r.Body, 1<<20), &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 	}
 
 	ctx := r.Context()
 
+	sess := s.getOrCreate()
 	res, err := sess.Run(ctx, req.Command)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -93,14 +92,17 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
-	sess := s.getOrCreate()
 	var req api.RunRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		return
+	if err := json.UnmarshalRead(io.LimitReader(r.Body, 1<<20), &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 	}
-	events, err := sess.Stream(r.Context(), req.Command)
+
+	ctx := r.Context()
+
+	sess := s.getOrCreate()
+	events, err := sess.Stream(ctx, req.Command)
 	if err != nil {
-		if r.Context().Err() != nil {
+		if ctx.Err() != nil {
 			writeErr(w, http.StatusRequestTimeout, "request canceled")
 			return
 		}
@@ -125,7 +127,7 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 	defer ping.Stop()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case <-ping.C:
 			_, _ = w.Write([]byte(": ping\n\n"))
@@ -134,11 +136,12 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 			if !open {
 				return
 			}
-			data, err := json.Marshal(ev)
-			if err != nil {
+			w.Write([]byte("data: "))
+			if err := json.MarshalWrite(w, ev); err != nil {
+				slog.ErrorContext(ctx, "cannot write data to response", "error", err)
 				return
 			}
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			w.Write([]byte("\n\n"))
 			flusher.Flush()
 			if ev.Type == "done" {
 				return
@@ -178,8 +181,8 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	var req api.WriteRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		return
+	if err := json.UnmarshalRead(io.LimitReader(r.Body, 1<<20), &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 	}
 	if req.Path == "" {
 		writeErr(w, http.StatusBadRequest, "path required")
@@ -194,15 +197,6 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
-	reader := io.LimitReader(r.Body, 1<<20)
-	if err := json.UnmarshalRead(reader, v); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
-		return err
-	}
-	return nil
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
