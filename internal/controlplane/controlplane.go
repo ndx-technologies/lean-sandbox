@@ -229,9 +229,6 @@ func (cp *ControlPlane) GetSandbox(ctx context.Context, id api.SandboxID) (*Sand
 
 var ErrSandboxExpired = fmt.Errorf("sandbox lease expired")
 
-// KeepAlive renews a sandbox lease. It returns ErrSandboxExpired if the
-// sandbox is no longer tracked (e.g. already reclaimed by the janitor), so
-// the caller knows to allocate a fresh one.
 func (cp *ControlPlane) KeepAlive(ctx context.Context, id api.SandboxID) (*Sandbox, error) {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
