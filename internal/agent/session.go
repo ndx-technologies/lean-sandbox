@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -245,14 +244,11 @@ func (s *Session) pump(
 	events <- api.StreamEvent{Type: "done", ExitCode: exitCode}
 }
 
-// Close is a no-op placeholder for the session lifecycle (no long-lived process).
-func (s *Session) Close() {}
-
 // buildScript wraps the user command so env/cwd persist and markers delimit state.
 func buildScript(command string, env map[string]string, cwd string) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
-	for _, k := range sortedKeys(env) {
+	for _, k := range env {
 		if sessionVarsNeverPersist[k] {
 			continue
 		}
@@ -308,15 +304,6 @@ func snapshotEnv(environ []string) map[string]string {
 		}
 	}
 	return m
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // shellEscape single-quotes a value for safe embedding in the script.
