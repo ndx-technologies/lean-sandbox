@@ -15,9 +15,7 @@ type Server struct {
 }
 
 // NewServer returns the HTTP API for a control plane. apiKey empty disables auth.
-func NewServer(cp *ControlPlane, apiKey string) *Server {
-	return &Server{cp: cp, apiKey: apiKey}
-}
+func NewServer(cp *ControlPlane, apiKey string) *Server { return &Server{cp: cp, apiKey: apiKey} }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
