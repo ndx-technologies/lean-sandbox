@@ -37,18 +37,14 @@ func buildOutOfClusterConfig() (*rest.Config, error) {
 // An init container copies the static agent binary from AgentImage into a
 // shared emptyDir; the sandbox container then starts it as its entrypoint.
 func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string) *corev1.Pod {
-	podName := "lean-sbx-" + id.String()
-	labels := map[string]string{
-		"app":                        "lean-sandbox",
-		"lean-sandbox.ndx.one/id":    id.String(),
-		"lean-sandbox.ndx.one/image": sanitizeLabelValue(image),
-	}
-
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
+			Name:      "lean-sbx-" + id.String(),
 			Namespace: cp.config.Namespace,
-			Labels:    labels,
+			Labels: map[string]string{
+				"app":                     "lean-sandbox",
+				"lean-sandbox.ndx.one/id": id.String(),
+			},
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
@@ -97,8 +93,6 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string
 	}
 }
 
-// agentArgs builds the sandbox container args: the sandbox id (JWT sub must
-// match) and the control plane's public key so the agent can verify JWTs.
 func agentArgs(port int, sandboxID, pubKeyB64 string) []string {
 	args := []string{"-listen", ":" + strconv.Itoa(port)}
 	if sandboxID != "" {
@@ -110,8 +104,6 @@ func agentArgs(port int, sandboxID, pubKeyB64 string) []string {
 	return args
 }
 
-// resourcesFor returns the pod resources for image, using its warm-pool spec
-// when configured, otherwise lean defaults so the warm pool is cheap while idle.
 func (cp *ControlPlane) resourcesFor(image string) corev1.ResourceRequirements {
 	for _, s := range cp.config.Sandboxes {
 		if s.Image == image && (len(s.Resources.Requests) > 0 || len(s.Resources.Limits) > 0) {
@@ -128,19 +120,4 @@ func (cp *ControlPlane) resourcesFor(image string) corev1.ResourceRequirements {
 			corev1.ResourceMemory: resource.MustParse("256Mi"),
 		},
 	}
-}
-
-// sanitizeLabelValue keeps a label value within DNS-1123 safe chars for
-// common image strings like "ubuntu:22.04".
-func sanitizeLabelValue(v string) string {
-	out := make([]rune, 0, len(v))
-	for _, r := range v {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
-			out = append(out, r)
-		default:
-			out = append(out, '-')
-		}
-	}
-	return string(out)
 }
