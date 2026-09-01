@@ -248,14 +248,14 @@ func (s *Session) pump(
 func buildScript(command string, env map[string]string, cwd string) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
-	for _, k := range env {
+	for k, v := range env {
 		if sessionVarsNeverPersist[k] {
 			continue
 		}
 		b.WriteString("export ")
 		b.WriteString(shellEscape(k))
 		b.WriteString("=")
-		b.WriteString(shellEscape(env[k]))
+		b.WriteString(shellEscape(v))
 		b.WriteString("\n")
 	}
 	if cwd != "" {
