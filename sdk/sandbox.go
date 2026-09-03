@@ -32,11 +32,11 @@ func (sb *Sandbox) Run(ctx context.Context, command string) (*api.RunResponse, e
 		return nil, err
 	}
 
-	go func() {
+	go func(ctx context.Context) {
 		if err := sb.ControlPlane.KeepAlive(ctx, sb.Sandbox.ID); err != nil {
 			slog.ErrorContext(ctx, "cannot keep alive sandbox", "sandbox_id", sb.Sandbox.ID, "error", err)
 		}
-	}()
+	}(context.Background())
 
 	return &out, nil
 }
@@ -75,11 +75,11 @@ func (sb *Sandbox) Stream(ctx context.Context, command string) (<-chan api.Strea
 		return nil, fmt.Errorf("agent stream: %s", e.Error)
 	}
 
-	go func() {
+	go func(ctx context.Context) {
 		if err := sb.ControlPlane.KeepAlive(ctx, sb.Sandbox.ID); err != nil {
 			slog.ErrorContext(ctx, "cannot keep alive sandbox", "sandbox_id", sb.Sandbox.ID, "error", err)
 		}
-	}()
+	}(context.Background())
 
 	events := make(chan api.StreamEvent, 64)
 	go func() {
