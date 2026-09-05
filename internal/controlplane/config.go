@@ -1,7 +1,7 @@
 package controlplane
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"os"
 	"time"
 
@@ -33,6 +33,9 @@ func (s Config) WithDefaults() Config {
 	}
 	if s.TokenTTL == 0 {
 		s.TokenTTL = 15 * time.Minute
+	}
+	for i := range s.Sandboxes {
+		s.Sandboxes[i] = s.Sandboxes[i].WithDefaults()
 	}
 	return s
 }
@@ -68,15 +71,24 @@ type SandboxSpec struct {
 	Image        string                      `json:"image"`
 	PoolSizeWarm int                         `json:"pool_size_warm"`
 	Resources    corev1.ResourceRequirements `json:"resources,omitzero"`
+	DiskLimitMiB int                         `json:"disk_limit_mib,omitzero"`
+}
+
+func (s SandboxSpec) WithDefaults() SandboxSpec {
+	if s.DiskLimitMiB == 0 {
+		s.DiskLimitMiB = 256
+	}
+	return s
 }
 
 func LoadConfig(path string) (Config, error) {
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return Config{}, err
 	}
+	defer f.Close()
 	var c Config
-	if err := json.Unmarshal(b, &c); err != nil {
+	if err := json.UnmarshalRead(f, &c); err != nil {
 		return Config{}, err
 	}
 	return c, nil

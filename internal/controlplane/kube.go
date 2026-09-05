@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,10 +16,14 @@ import (
 	"github.com/ndx-technologies/lean-sandbox/api"
 )
 
-// Agent binary mount path inside the sandbox container.
 const (
+	// Agent binary mount path inside the sandbox container.
 	agentMountPath = "/opt/lean-sandbox"
 	agentBinPath   = agentMountPath + "/agent"
+
+	// agentBinLimitMiB caps the emptyDir that only carries the small injected
+	// agent binary, so it adds nothing meaningful to the writable budget.
+	agentBinLimitMiB = 32
 )
 
 // buildOutOfClusterConfig loads kubeconfig from KUBECONFIG or ~/.kube/config.
@@ -81,7 +86,7 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string
 						FailureThreshold:    5,
 					},
 					VolumeMounts: []corev1.VolumeMount{
-						{Name: "agent-bin", MountPath: agentMountPath},
+						{Name: "agent-bin", MountPath: agentMountPath, ReadOnly: true},
 						{Name: "tmp", MountPath: "/tmp"},
 					},
 					SecurityContext: &corev1.SecurityContext{
@@ -99,8 +104,18 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string
 				},
 			},
 			Volumes: []corev1.Volume{
-				{Name: "agent-bin", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				{
+					Name: "agent-bin",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: miB(agentBinLimitMiB)},
+					},
+				},
+				{
+					Name: "tmp",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: miB(cp.diskLimitMiB(image))},
+					},
+				},
 			},
 		},
 	}
@@ -117,20 +132,41 @@ func agentArgs(port int, sandboxID, pubKeyB64 string) []string {
 	return args
 }
 
-func (cp *ControlPlane) resourcesFor(image string) corev1.ResourceRequirements {
+func (cp *ControlPlane) diskLimitMiB(image string) int64 {
 	for _, s := range cp.config.Sandboxes {
-		if s.Image == image && (len(s.Resources.Requests) > 0 || len(s.Resources.Limits) > 0) {
-			return s.Resources
+		if s.Image == image {
+			return int64(s.DiskLimitMiB)
 		}
 	}
+	return 256
+}
+
+func miB(mib int64) *resource.Quantity {
+	return new(*resource.NewQuantity(mib*1024*1024, resource.BinarySI))
+}
+
+func defaultResources() corev1.ResourceRequirements {
 	return corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("10m"),
 			corev1.ResourceMemory: resource.MustParse("32Mi"),
 		},
 		Limits: corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse("500m"),
-			corev1.ResourceMemory: resource.MustParse("256Mi"),
+			corev1.ResourceCPU:              resource.MustParse("500m"),
+			corev1.ResourceMemory:           resource.MustParse("256Mi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("256Mi"),
 		},
 	}
+}
+
+func (cp *ControlPlane) resourcesFor(image string) corev1.ResourceRequirements {
+	req := defaultResources()
+	for _, s := range cp.config.Sandboxes {
+		if s.Image == image && (len(s.Resources.Requests) > 0 || len(s.Resources.Limits) > 0) {
+			maps.Copy(req.Requests, s.Resources.Requests)
+			maps.Copy(req.Limits, s.Resources.Limits)
+			break
+		}
+	}
+	return req
 }
