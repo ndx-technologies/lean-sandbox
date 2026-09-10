@@ -17,13 +17,17 @@ const (
 // and the agent kills the whole process group when the request context is
 // canceled.
 type RunRequest struct {
-	Command string `json:"command"`
+	Command   string `json:"command"`
+	MaxStdOut int    `json:"max_stdout,omitzero"` // when exceeds then written to local file, and path is returned
+	MaxStdErr int    `json:"max_stderr,omitzero"` // when exceeds then written to local file, and path is returned
 }
 
 type RunResponse struct {
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code"`
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+	ExitCode   int    `json:"exit_code"`
+	StdoutPath string `json:"stdout_path,omitzero"`
+	StderrPath string `json:"stderr_path,omitzero"`
 }
 
 // StreamEvent is one frame of the SSE stream from /v1/run-stream.

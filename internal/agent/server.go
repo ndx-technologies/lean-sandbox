@@ -76,7 +76,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	sess := s.getOrCreate()
-	res, err := sess.Run(ctx, req.Command)
+	res, err := sess.RunRequest(ctx, req)
 	if err != nil {
 		if ctx.Err() != nil {
 			writeErr(w, http.StatusRequestTimeout, "request canceled")
@@ -89,7 +89,14 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	if err := json.MarshalWrite(w, api.RunResponse{Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode}); err != nil {
+	resp := api.RunResponse{
+		Stdout:     res.Stdout,
+		Stderr:     res.Stderr,
+		ExitCode:   res.ExitCode,
+		StdoutPath: res.StdoutPath,
+		StderrPath: res.StderrPath,
+	}
+	if err := json.MarshalWrite(w, resp); err != nil {
 		slog.ErrorContext(ctx, "cannot write response", "error", err)
 	}
 }

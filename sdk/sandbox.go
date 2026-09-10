@@ -41,6 +41,21 @@ func (sb *Sandbox) Run(ctx context.Context, command string) (*api.RunResponse, e
 	return &out, nil
 }
 
+func (sb *Sandbox) RunRequest(ctx context.Context, req api.RunRequest) (*api.RunResponse, error) {
+	var out api.RunResponse
+	if err := sb.do(ctx, http.MethodPost, "/v1/run", req, &out); err != nil {
+		return nil, err
+	}
+
+	go func(ctx context.Context) {
+		if err := sb.ControlPlane.KeepAlive(ctx, sb.Sandbox.ID); err != nil {
+			slog.ErrorContext(ctx, "cannot keep alive sandbox", "sandbox_id", sb.Sandbox.ID, "error", err)
+		}
+	}(context.Background())
+
+	return &out, nil
+}
+
 // Stream runs a command and returns an SSE stream of events. The caller must
 // consume events until the channel closes; the final event is "done" with the
 // exit code. Cancel ctx to stop the command (the agent kills the process group).

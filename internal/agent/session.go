@@ -58,44 +58,79 @@ func NewSession() *Session { return &Session{env: snapshotEnv(os.Environ())} }
 // session server-side but not exposed; read them from stdout if the caller
 // needs them.
 type Result struct {
-	Stdout   string
-	Stderr   string
-	ExitCode int
+	Stdout     string
+	Stderr     string
+	ExitCode   int
+	StdoutPath string // set only when stdout exceeded max size
+	StderrPath string // set only when stderr exceeded max size
 }
 
 // Run executes command in the session, persisting env/cwd across calls.
-// It is a convenience wrapper around Stream that aggregates all events.
+// It is a convenience wrapper around RunRequest that returns output in full.
 func (s *Session) Run(ctx context.Context, command string) (*Result, error) {
-	events, err := s.Stream(ctx, command)
+	return s.RunRequest(ctx, api.RunRequest{Command: command})
+}
+
+// RunRequest executes comnand in the session, persisting env/cwd across calls.
+//
+// MaxStdOut and MaxStdErr cap the two streams independently: 0 returns that
+// stream in full. Past its cap a stream is still read to completion and written
+// in full to a file inside the sandbox, but only a notice crosses the wire, so a
+// caller that feeds a model never receives an unbounded body. A stream under
+// its cap is returned as usual and leaves no file behind.
+func (s *Session) RunRequest(ctx context.Context, req api.RunRequest) (*Result, error) {
+	events, out, err := s.stream(ctx, req.Command, req.MaxStdOut, req.MaxStdErr)
 	if err != nil {
 		return nil, err
 	}
-	var stdout, stderr strings.Builder
+
 	var exitCode int
 	var runErr error
 	for ev := range events {
-		switch ev.Type {
-		case "stdout":
-			stdout.WriteString(ev.Data)
-		case "stderr":
-			stderr.WriteString(ev.Data)
-		case "done":
+		if ev.Type == "done" {
 			exitCode = ev.ExitCode
 			if ev.Error != "" {
 				runErr = errors.New(ev.Error)
 			}
 		}
 	}
-	return &Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCode}, runErr
+
+	res := &Result{Stdout: out.stdout.content(), Stderr: out.stderr.content(), ExitCode: exitCode}
+	if out.stdout.spilled {
+		res.Stdout, res.StdoutPath = out.stdout.notice(), out.stdout.path
+	}
+	if out.stderr.spilled {
+		res.Stderr, res.StderrPath = out.stderr.notice(), out.stderr.path
+	}
+	if err := errors.Join(out.stdout.close(), out.stderr.close()); err != nil {
+		slog.ErrorContext(ctx, "cannot close spill file", "error", err)
+	}
+	return res, runErr
 }
 
 // Stream runs command and streams stdout/stderr events, ending with a "done"
 // event carrying the exit code. The channel is closed after the "done" event.
 // The session env/cwd are updated server-side when the stream ends. Canceling
 // ctx (e.g. context.WithTimeout) kills the whole process group.
+//
+// Events are uncapped: a streaming consumer wants every byte. Use RunRequest
+// with MaxStdOut/MaxStdErr when the consumer must not receive unbounded output.
 func (s *Session) Stream(ctx context.Context, command string) (<-chan api.StreamEvent, error) {
+	events, _, err := s.stream(ctx, command, 0, 0)
+	return events, err
+}
+
+// stream starts command and returns its event channel plus the per-stream
+// capture state backing the capped response of Run.
+func (s *Session) stream(ctx context.Context, command string, maxStdOut, maxStdErr int) (<-chan api.StreamEvent, *captures, error) {
 	if strings.TrimSpace(command) == "" {
-		return nil, errors.New("empty command")
+		return nil, nil, errors.New("empty command")
+	}
+	if maxStdOut < 0 {
+		maxStdOut = 0
+	}
+	if maxStdErr < 0 {
+		maxStdErr = 0
 	}
 	s.mu.Lock()
 	script := buildScript(command, s.env, s.cwd)
@@ -103,12 +138,12 @@ func (s *Session) Stream(ctx context.Context, command string) (<-chan api.Stream
 
 	scriptFile, err := os.CreateTemp("", "lean-sandbox-*.sh")
 	if err != nil {
-		return nil, fmt.Errorf("create script: %w", err)
+		return nil, nil, fmt.Errorf("create script: %w", err)
 	}
 	scriptPath := scriptFile.Name()
 	if _, err := scriptFile.WriteString(script); err != nil {
 		_ = scriptFile.Close()
-		return nil, fmt.Errorf("write script: %w", err)
+		return nil, nil, fmt.Errorf("write script: %w", err)
 	}
 	_ = scriptFile.Close()
 
@@ -121,26 +156,28 @@ func (s *Session) Stream(ctx context.Context, command string) (<-chan api.Stream
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		_ = os.Remove(scriptPath)
-		return nil, fmt.Errorf("stdout pipe: %w", err)
+		return nil, nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
 		_ = os.Remove(scriptPath)
-		return nil, fmt.Errorf("stderr pipe: %w", err)
+		return nil, nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
 
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(scriptPath)
-		return nil, fmt.Errorf("start: %w", err)
+		return nil, nil, fmt.Errorf("start: %w", err)
 	}
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
 
+	out := &captures{}
+	out.stdout.max, out.stderr.max = maxStdOut, maxStdErr
 	events := make(chan api.StreamEvent, 64)
-	go s.pump(ctx, cmd, scriptPath, stdoutR, stderrR, events)
-	return events, nil
+	go s.pump(ctx, cmd, scriptPath, stdoutR, stderrR, events, out)
+	return events, out, nil
 }
 
 // pump drives the process to completion, streaming events and finalizing the
@@ -151,6 +188,7 @@ func (s *Session) pump(
 	scriptPath string,
 	stdoutR, stderrR *os.File,
 	events chan<- api.StreamEvent,
+	out *captures,
 ) {
 	defer os.Remove(scriptPath)
 	defer close(events)
@@ -187,6 +225,10 @@ func (s *Session) pump(
 				}
 				continue
 			}
+			out.stdout.add(line)
+			if out.stdout.spilled {
+				continue // the response is already bounded; the file holds the rest
+			}
 			select {
 			case events <- api.StreamEvent{Type: "stdout", Data: line + "\n"}:
 			case <-ctx.Done():
@@ -204,6 +246,10 @@ func (s *Session) pump(
 		sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 		for sc.Scan() {
 			line := sc.Text()
+			out.stderr.add(line)
+			if out.stderr.spilled {
+				continue // the response is already bounded; the file holds the rest
+			}
 			select {
 			case events <- api.StreamEvent{Type: "stderr", Data: line + "\n"}:
 			case <-ctx.Done():
@@ -242,6 +288,87 @@ func (s *Session) pump(
 	s.mu.Unlock()
 
 	events <- api.StreamEvent{Type: "done", ExitCode: exitCode}
+}
+
+// spillDir holds output that exceeded a run's cap. It lives in /tmp so it is
+// discarded with the pod and can never outlive the sandbox.
+const spillDir = "/tmp/lean-sandbox-runs"
+
+// captures is the per-stream state of one run: what the response returns and,
+// once a cap is crossed, the file holding the rest of the output.
+type captures struct {
+	stdout output
+	stderr output
+}
+
+// output accumulates one stream (stdout or stderr) under an optional byte cap.
+//
+// Up to max bytes are retained in memory; past that the whole stream is written
+// to a file and only a notice is returned, so the response stays bounded while
+// no output is lost. The file is created lazily on the first write past the cap,
+// so output that fits leaves nothing behind.
+type output struct {
+	max     int
+	buf     strings.Builder
+	file    *os.File
+	path    string
+	bytes   int
+	spilled bool
+}
+
+// add appends one line of the stream, spilling to a file once the cap is crossed.
+func (o *output) add(line string) {
+	o.bytes += len(line) + 1 // the trailing newline this line is stored with
+	o.buf.WriteString(line)
+	o.buf.WriteByte('\n')
+	if o.max <= 0 || o.bytes <= o.max {
+		return
+	}
+	// protect from repeated file creation. spilled is spearte flag from o.file == nil
+	if !o.spilled {
+		o.spilled = true
+		o.open()
+	}
+	if o.file == nil {
+		// Spill file unavailable (logged in open): keep the output rather than
+		// lose it, which degrades to the uncapped behaviour.
+		return
+	}
+	if _, err := o.file.WriteString(o.buf.String()); err != nil {
+		slog.Error("cannot write spill file", "path", o.path, "error", err)
+	}
+	o.buf.Reset()
+}
+
+// open creates the spill file. Callers flush what was buffered before the cap
+// was crossed, so the file always holds the stream from its first byte.
+func (o *output) open() {
+	if err := os.MkdirAll(spillDir, 0o755); err != nil {
+		slog.Error("cannot create spill dir", "dir", spillDir, "error", err)
+		return
+	}
+	f, err := os.CreateTemp(spillDir, "output-*.log")
+	if err != nil {
+		slog.Error("cannot create spill file", "dir", spillDir, "error", err)
+		return
+	}
+	o.file, o.path = f, f.Name()
+}
+
+// content is what the response carries when the stream was not spilled.
+func (o *output) content() string { return o.buf.String() }
+
+// notice is what the response carries instead of spilled content.
+func (o *output) notice() string {
+	return fmt.Sprintf("Output size (%d) exceeds max size (%d); output is written to: %s", o.bytes, o.max, o.path)
+}
+
+// close releases the spill file, if one was created.
+func (o *output) close() error {
+	if o.file == nil {
+		return nil
+	}
+	return o.file.Close()
 }
 
 // buildScript wraps the user command so env/cwd persist and markers delimit state.
