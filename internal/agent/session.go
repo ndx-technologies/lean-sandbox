@@ -206,25 +206,28 @@ func (s *Session) pump(
 		sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 		for sc.Scan() {
 			line := sc.Text()
-			switch {
-			case line == markerEnvStart:
+
+			if prefix, ok := strings.CutSuffix(line, markerEnvStart); ok {
 				inEnv = true
-				continue
-			case line == markerEnvEnd:
+				if prefix == "" {
+					continue
+				}
+				line = prefix
+			} else if line == markerEnvEnd {
 				inEnv = false
 				continue
-			case strings.HasPrefix(line, markerPwdPrefix):
-				pwdOut = strings.TrimPrefix(line, markerPwdPrefix)
-				continue
-			case strings.HasPrefix(line, markerExitPref):
-				continue
-			}
-			if inEnv {
+			} else if inEnv {
 				if k, v, ok := parseExportLine(line); ok {
 					envOut[k] = v
 				}
 				continue
+			} else if after, ok0 := strings.CutPrefix(line, markerPwdPrefix); ok0 {
+				pwdOut = after
+				continue
+			} else if strings.HasPrefix(line, markerExitPref) {
+				continue
 			}
+
 			out.stdout.add(line)
 			if out.stdout.spilled {
 				continue // the response is already bounded; the file holds the rest

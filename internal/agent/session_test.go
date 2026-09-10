@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ndx-technologies/lean-sandbox/api"
 )
 
 // TestSessionPersistence verifies env + cwd survive across Run calls.
@@ -120,5 +123,59 @@ func TestSessionConcurrent(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatalf("concurrent run: %v", err)
 		}
+	}
+}
+
+// TestSessionNoTrailingNewline verifies output that does not end with a newline
+// keeps its state markers consumed. bash glues the start marker onto the last
+// line of output, and a marker missed that way leaks the whole `export -p` block
+// into the response and into any spill file.
+func TestSessionNoTrailingNewline(t *testing.T) {
+	s := NewSession()
+
+	r1, err := s.Run(t.Context(), "cd /tmp && printf abc")
+	if err != nil {
+		t.Fatalf("run1: %v", err)
+	}
+	if r1.Stdout != "abc\n" {
+		t.Errorf("stdout=%q want %q", r1.Stdout, "abc\n")
+	}
+	for _, leak := range []string{"declare -x", "__LEAN_", "export -p"} {
+		if strings.Contains(r1.Stdout, leak) {
+			t.Errorf("stdout leaked %q: %q", leak, r1.Stdout)
+		}
+	}
+
+	// The trailer must still be parsed after a glued marker: cwd persistence
+	// proves the pwd marker was consumed.
+	r2, err := s.Run(t.Context(), "pwd")
+	if err != nil {
+		t.Fatalf("run2: %v", err)
+	}
+	if !strings.Contains(r2.Stdout, "/tmp") {
+		t.Errorf("cwd not persisted: %q", r2.Stdout)
+	}
+
+	// The same filtering feeds the spill file, so the env dump must not land
+	// there either. 5000 bytes of output must produce a 5000-byte file plus the
+	// newline that forwarding adds.
+	r3, err := s.RunRequest(t.Context(), api.RunRequest{Command: `printf "x%.0s" $(seq 1 5000)`, MaxStdOut: 64})
+	if err != nil {
+		t.Fatalf("run3: %v", err)
+	}
+	defer os.Remove(r3.StdoutPath)
+	if r3.StdoutPath == "" {
+		t.Fatal("expected stdout to spill")
+	}
+
+	b, err := os.ReadFile(r3.StdoutPath)
+	if err != nil {
+		t.Fatalf("read spill file: %v", err)
+	}
+	if strings.Contains(string(b), "declare -x") || strings.Contains(string(b), "__LEAN_") {
+		t.Errorf("spill file leaked the state block (%d bytes)", len(b))
+	}
+	if len(b) != 5001 {
+		t.Errorf("spill file holds %d bytes, want 5001", len(b))
 	}
 }
