@@ -96,7 +96,7 @@ func (cp *ControlPlane) reconcile(ctx context.Context) {
 	cp.reapOrphans(ctx)
 
 	for _, s := range cp.config.Sandboxes {
-		if err := cp.refillWarmPool(ctx, s.Image, s.PoolSizeWarm); err != nil {
+		if err := cp.refillWarmPool(ctx, s, s.PoolSizeWarm); err != nil {
 			slog.ErrorContext(ctx, "warm pool refill", "image", s.Image, "error", err)
 		}
 	}
@@ -158,26 +158,28 @@ func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 	}
 }
 
-// NewSandbox claims a warm pod for image, or cold-creates one.
-// The returned sandbox is ready to use.
+// NewSandbox claims a warm pod for the requested image, or cold-creates one.
+// The returned sandbox is ready to use. An image without a config entry is refused.
 func (cp *ControlPlane) NewSandbox(ctx context.Context, req api.SandboxRequest) (*Sandbox, error) {
-	if req.Image == "" {
-		return nil, fmt.Errorf("image required")
+	spec, ok := cp.config.SandboxSpec(req.Image)
+	if !ok {
+		return nil, fmt.Errorf("image %q is not configured", req.Image)
 	}
+
 	cp.mu.Lock()
-	warm := cp.byImage[req.Image]
+	warm := cp.byImage[spec.Image]
 	if len(warm) > 0 {
 		sb := warm[len(warm)-1]
-		cp.byImage[req.Image] = warm[:len(warm)-1]
+		cp.byImage[spec.Image] = warm[:len(warm)-1]
 		sb.Claimed = true
 		sb.LastSeen = time.Now()
 		cp.mu.Unlock()
-		slog.InfoContext(ctx, "claimed warm sandbox", "sandbox_id", sb.ID, "image", req.Image)
+		slog.InfoContext(ctx, "claimed warm sandbox", "sandbox_id", sb.ID, "image", spec.Image)
 		return sb, nil
 	}
 	cp.mu.Unlock()
 
-	sb, err := cp.createPod(ctx, req.Image)
+	sb, err := cp.createPod(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -229,26 +231,16 @@ func (cp *ControlPlane) DeleteSandbox(ctx context.Context, id api.SandboxID) err
 	if err := cp.deleteSandbox(ctx, sb); err != nil {
 		return err
 	}
-	cp.refillAfterDelete(sb.Image)
-	return nil
-}
-
-// refillAfterDelete tops up the warm pool for image without blocking the
-// delete response. Only refills images that are configured as warm.
-func (cp *ControlPlane) refillAfterDelete(image string) {
-	for _, s := range cp.config.Sandboxes {
-		if s.Image != image {
-			continue
-		}
-		go func(warm int) {
+	if spec, ok := cp.config.SandboxSpec(sb.Image); ok && spec.PoolSizeWarm > 0 {
+		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
-			if err := cp.refillWarmPool(ctx, image, warm); err != nil {
-				slog.ErrorContext(ctx, "warm refill after delete", "image", image, "error", err)
+			if err := cp.refillWarmPool(ctx, spec, spec.PoolSizeWarm); err != nil {
+				slog.ErrorContext(ctx, "warm refill after delete", "image", spec.Image, "error", err)
 			}
-		}(s.PoolSizeWarm)
-		return
+		}()
 	}
+	return nil
 }
 
 func (cp *ControlPlane) ListSandboxes(ctx context.Context) []*Sandbox {
@@ -290,16 +282,16 @@ func (cp *ControlPlane) removeWarmRef(sb *Sandbox) {
 	}
 }
 
-// refillWarmPool ensures at least min ready pods exist for image.
-func (cp *ControlPlane) refillWarmPool(ctx context.Context, image string, min int) error {
+// refillWarmPool ensures at least min ready pods exist for the spec's image.
+func (cp *ControlPlane) refillWarmPool(ctx context.Context, spec SandboxSpec, min int) error {
 	cp.mu.RLock()
-	have := len(cp.byImage[image])
+	have := len(cp.byImage[spec.Image])
 	cp.mu.RUnlock()
 	if have >= min {
 		return nil
 	}
 	for i := have; i < min; i++ {
-		sb, err := cp.createPod(ctx, image)
+		sb, err := cp.createPod(ctx, spec)
 		if err != nil {
 			return err
 		}
@@ -310,24 +302,24 @@ func (cp *ControlPlane) refillWarmPool(ctx context.Context, image string, min in
 		sb.Claimed = false
 		cp.register(sb)
 		cp.mu.Lock()
-		cp.byImage[image] = append(cp.byImage[image], sb)
+		cp.byImage[spec.Image] = append(cp.byImage[spec.Image], sb)
 		cp.mu.Unlock()
-		slog.InfoContext(ctx, "warmed sandbox", "sandbox_id", sb.ID, "image", image)
+		slog.InfoContext(ctx, "warmed sandbox", "sandbox_id", sb.ID, "image", spec.Image)
 	}
 	return nil
 }
 
 // createPod builds and creates the sandbox pod (user image + injected agent).
-func (cp *ControlPlane) createPod(ctx context.Context, image string) (*Sandbox, error) {
+func (cp *ControlPlane) createPod(ctx context.Context, spec SandboxSpec) (*Sandbox, error) {
 	id := api.NewSandboxID()
-	pod := cp.podSpec(image, id, cp.pubKeyB64)
+	pod := cp.podSpec(spec, id, cp.pubKeyB64)
 	created, err := cp.kube.CoreV1().Pods(cp.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("create pod: %w", err)
 	}
 	return &Sandbox{
 		ID:        id,
-		Image:     image,
+		Image:     spec.Image,
 		PodName:   created.Name,
 		Namespace: created.Namespace,
 		CreatedAt: time.Now(),

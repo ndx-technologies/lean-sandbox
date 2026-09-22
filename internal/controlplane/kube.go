@@ -17,16 +17,11 @@ import (
 )
 
 const (
-	// Agent binary mount path inside the sandbox container.
-	agentMountPath = "/opt/lean-sandbox"
-	agentBinPath   = agentMountPath + "/agent"
-
-	// agentBinLimitMiB caps the emptyDir that only carries the small injected
-	// agent binary, so it adds nothing meaningful to the writable budget.
+	agentMountPath   = "/opt/lean-sandbox"
+	agentBinPath     = agentMountPath + "/agent"
 	agentBinLimitMiB = 32
 )
 
-// buildOutOfClusterConfig loads kubeconfig from KUBECONFIG or ~/.kube/config.
 func buildOutOfClusterConfig() (*rest.Config, error) {
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
@@ -39,10 +34,7 @@ func buildOutOfClusterConfig() (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", kubeconfig)
 }
 
-// podSpec builds the sandbox pod: user image runs the injected agent binary.
-// An init container copies the static agent binary from AgentImage into a
-// shared emptyDir; the sandbox container then starts it as its entrypoint.
-func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string) *corev1.Pod {
+func (cp *ControlPlane) podSpec(spec SandboxSpec, id api.SandboxID, pubKeyB64 string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "lean-sbx-" + id.String(),
@@ -53,7 +45,8 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
+			RestartPolicy:      corev1.RestartPolicyNever,
+			ServiceAccountName: spec.ServiceAccountName,
 			InitContainers: []corev1.Container{
 				{
 					Name:    "agent-inject",
@@ -67,7 +60,7 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string
 			Containers: []corev1.Container{
 				{
 					Name:    "sandbox",
-					Image:   image,
+					Image:   spec.Image,
 					Command: []string{agentBinPath},
 					Args:    agentArgs(cp.config.AgentPort, id.String(), pubKeyB64),
 					Ports: []corev1.ContainerPort{
@@ -100,7 +93,7 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
 					},
-					Resources: cp.resourcesFor(image),
+					Resources: resourcesFor(spec),
 				},
 			},
 			Volumes: []corev1.Volume{
@@ -113,7 +106,7 @@ func (cp *ControlPlane) podSpec(image string, id api.SandboxID, pubKeyB64 string
 				{
 					Name: "tmp",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: miB(cp.diskLimitMiB(image))},
+						EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: miB(int64(spec.DiskLimitMiB))},
 					},
 				},
 			},
@@ -130,15 +123,6 @@ func agentArgs(port int, sandboxID, pubKeyB64 string) []string {
 		args = append(args, "-controlplane-public-key", pubKeyB64)
 	}
 	return args
-}
-
-func (cp *ControlPlane) diskLimitMiB(image string) int64 {
-	for _, s := range cp.config.Sandboxes {
-		if s.Image == image {
-			return int64(s.DiskLimitMiB)
-		}
-	}
-	return 256
 }
 
 func miB(mib int64) *resource.Quantity {
@@ -159,14 +143,9 @@ func defaultResources() corev1.ResourceRequirements {
 	}
 }
 
-func (cp *ControlPlane) resourcesFor(image string) corev1.ResourceRequirements {
+func resourcesFor(spec SandboxSpec) corev1.ResourceRequirements {
 	req := defaultResources()
-	for _, s := range cp.config.Sandboxes {
-		if s.Image == image && (len(s.Resources.Requests) > 0 || len(s.Resources.Limits) > 0) {
-			maps.Copy(req.Requests, s.Resources.Requests)
-			maps.Copy(req.Limits, s.Resources.Limits)
-			break
-		}
-	}
+	maps.Copy(req.Requests, spec.Resources.Requests)
+	maps.Copy(req.Limits, spec.Resources.Limits)
 	return req
 }

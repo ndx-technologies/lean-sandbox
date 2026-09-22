@@ -123,3 +123,33 @@ func TestReconcileKeepsActiveSandbox(t *testing.T) {
 		t.Fatal("active sandbox was incorrectly reclaimed")
 	}
 }
+
+// TestNewSandboxRefusesUnconfiguredImage verifies the control plane creates
+// nothing for an image it has no config for: warm pools, limits and identity
+// all come from config, so an unknown image has none of them.
+func TestNewSandboxRefusesUnconfiguredImage(t *testing.T) {
+	tests := []struct {
+		name  string
+		image string
+	}{
+		{name: "unknown image", image: "alpine:3"},
+		{name: "empty image", image: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cp := newTestCP(t)
+
+			if _, err := cp.NewSandbox(context.Background(), api.SandboxRequest{Image: tt.image}); err == nil {
+				t.Fatal(tt)
+			}
+
+			pods, err := cp.kube.CoreV1().Pods(cp.config.Namespace).List(context.Background(), metav1.ListOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pods.Items) != 0 {
+				t.Error(tt, len(pods.Items))
+			}
+		})
+	}
+}

@@ -68,10 +68,11 @@ func (c Config) Merge(other Config) Config {
 }
 
 type SandboxSpec struct {
-	Image        string                      `json:"image"`
-	PoolSizeWarm int                         `json:"pool_size_warm"`
-	Resources    corev1.ResourceRequirements `json:"resources,omitzero"`
-	DiskLimitMiB int                         `json:"disk_limit_mib,omitzero"`
+	Image              string                      `json:"image"`
+	PoolSizeWarm       int                         `json:"pool_size_warm"`
+	Resources          corev1.ResourceRequirements `json:"resources,omitzero"`
+	DiskLimitMiB       int                         `json:"disk_limit_mib,omitzero"`
+	ServiceAccountName string                      `json:"service_account_name,omitzero"`
 }
 
 func (s SandboxSpec) WithDefaults() SandboxSpec {
@@ -79,6 +80,15 @@ func (s SandboxSpec) WithDefaults() SandboxSpec {
 		s.DiskLimitMiB = 256
 	}
 	return s
+}
+
+func (c Config) SandboxSpec(image string) (spec SandboxSpec, ok bool) {
+	for _, s := range c.Sandboxes {
+		if s.Image == image {
+			return s.WithDefaults(), true
+		}
+	}
+	return SandboxSpec{}, false
 }
 
 func LoadConfig(path string) (Config, error) {
