@@ -67,8 +67,6 @@ func TestVerifyRejects(t *testing.T) {
 		})
 	}
 
-	// Issued in the future: sign now, then verify with a `now` 10 minutes in
-	// the past so iat is ahead of the allowed clock skew.
 	t.Run("issued in future", func(t *testing.T) {
 		tok := mustSign(t, key, "sb-1", time.Hour)
 		if err := Verify(tok, pub, "sb-1", time.Now().Add(-10*time.Minute)); err == nil {
@@ -76,7 +74,6 @@ func TestVerifyRejects(t *testing.T) {
 		}
 	})
 
-	// alg=none must be rejected: an unsigned token would otherwise pass.
 	t.Run("alg none", func(t *testing.T) {
 		h := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
 		p := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"sb-1","iat":1,"exp":9999999999}`))

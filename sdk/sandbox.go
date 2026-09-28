@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"path/filepath"
 
 	"github.com/ndx-technologies/lean-sandbox/api"
+	"github.com/ndx-technologies/lean-sandbox/internal/tarx"
 )
 
 // Sandbox is a handle to a created sandbox.
@@ -78,16 +80,8 @@ func (sb *Sandbox) Stream(ctx context.Context, command string) (<-chan api.Strea
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		var e api.Error
-		if err := json.UnmarshalRead(resp.Body, &e); err != nil {
-			slog.ErrorContext(ctx, "cannot decode respose error", "error", err)
-		}
-
-		resp.Body.Close()
-		if e.Error == "" {
-			e.Error = resp.Status
-		}
-		return nil, fmt.Errorf("agent stream: %s", e.Error)
+		defer resp.Body.Close()
+		return nil, httpError(ctx, resp)
 	}
 
 	go func(ctx context.Context) {
@@ -163,14 +157,7 @@ func (sb *Sandbox) do(ctx context.Context, method, path string, body, out any) e
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		var e api.Error
-		if err := json.UnmarshalRead(resp.Body, &e); err != nil {
-			slog.ErrorContext(ctx, "cannot decode error", "error", err)
-		}
-		if e.Error == "" {
-			e.Error = resp.Status
-		}
-		return fmt.Errorf("agent %s: %s", resp.Status, e.Error)
+		return httpError(ctx, resp)
 	}
 
 	if out == nil {
@@ -180,18 +167,67 @@ func (sb *Sandbox) do(ctx context.Context, method, path string, body, out any) e
 	return json.UnmarshalRead(resp.Body, &out)
 }
 
-// ReadFile reads a file from the sandbox filesystem.
-func (sb *Sandbox) ReadFile(ctx context.Context, path string) (string, error) {
-	var out struct {
-		Content string `json:"content"`
-	}
-	if err := sb.do(ctx, http.MethodGet, "/v1/file?path="+path, nil, &out); err != nil {
-		return "", err
-	}
-	return out.Content, nil
+func (sb *Sandbox) WriteFile(ctx context.Context, path string, content []byte) error {
+	return sb.doRaw(ctx, http.MethodPut, "/v1/file?path="+url.QueryEscape(path), bytes.NewReader(content), nil)
 }
 
-// WriteFile writes a file into the sandbox filesystem.
-func (sb *Sandbox) WriteFile(ctx context.Context, path, content string) error {
-	return sb.do(ctx, http.MethodPut, "/v1/file", api.WriteRequest{Path: path, Content: content}, nil)
+func (sb *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := sb.doRaw(ctx, http.MethodGet, "/v1/file?path="+url.QueryEscape(path), nil, &buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (sb *Sandbox) UploadDir(ctx context.Context, from, to string) error {
+	to = filepath.Clean(to)
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	go func() { pw.CloseWithError(tarx.Pack(pw, to, filepath.Base(to))) }()
+
+	return sb.doRaw(ctx, http.MethodPut, "/v1/files?root="+url.QueryEscape(from), pr, nil)
+}
+
+func (sb *Sandbox) DownloadDir(ctx context.Context, from, to string) error {
+	resp, err := sb.doRawResponse(ctx, http.MethodGet, "/v1/files?root="+url.QueryEscape(from), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return tarx.Unpack(resp.Body, to)
+}
+
+func (sb *Sandbox) doRaw(ctx context.Context, method, path string, body io.Reader, out io.Writer) error {
+	resp, err := sb.doRawResponse(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if out == nil {
+		return nil
+	}
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+func (sb *Sandbox) doRawResponse(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, sb.Sandbox.Endpoint+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/octet-stream")
+	}
+	if sb.Sandbox.AccessToken != "" {
+		req.Header.Set(api.AccessTokenHeader, sb.Sandbox.AccessToken)
+	}
+	resp, err := sb.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		return nil, httpError(ctx, resp)
+	}
+	return resp, nil
 }

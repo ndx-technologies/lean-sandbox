@@ -10,8 +10,6 @@ import (
 	"github.com/ndx-technologies/lean-sandbox/api"
 )
 
-// spillFileCount counts files the agent has spilled so a test can assert that
-// output which fits the cap leaves nothing behind.
 func spillFileCount(t *testing.T) int {
 	t.Helper()
 	entries, err := os.ReadDir(spillDir)
@@ -24,8 +22,6 @@ func spillFileCount(t *testing.T) int {
 	return len(entries)
 }
 
-// TestRunOutputUnderCap verifies output that fits is returned verbatim, with no
-// spill file created and no path in the result.
 func TestRunOutputUnderCap(t *testing.T) {
 	s := NewSession()
 
@@ -45,8 +41,6 @@ func TestRunOutputUnderCap(t *testing.T) {
 	}
 }
 
-// TestRunSpillsStdout verifies that stdout past the cap is written to a file in
-// full and that only a small notice naming the size and path is returned.
 func TestRunSpillsStdout(t *testing.T) {
 	s := NewSession()
 	const cmd = "seq 1 1000"
@@ -74,8 +68,6 @@ func TestRunSpillsStdout(t *testing.T) {
 	if !strings.Contains(r.Stdout, r.StdoutPath) {
 		t.Errorf("notice %q does not name the spill path", r.Stdout)
 	}
-	// The notice must not smuggle the output through: it has to stay far below
-	// the size of what was spilled, or the cap buys nothing.
 	if len(r.Stdout) > 200 {
 		t.Errorf("notice is %d bytes, want a small message", len(r.Stdout))
 	}
@@ -89,9 +81,6 @@ func TestRunSpillsStdout(t *testing.T) {
 	}
 }
 
-// TestRunSpillsLargeOutput verifies capping a multi-megabyte stream: the
-// response stays a short notice, the spill file holds every byte, and the
-// notice reports the true total size.
 func TestRunSpillsLargeOutput(t *testing.T) {
 	s := NewSession()
 
@@ -100,7 +89,7 @@ func TestRunSpillsLargeOutput(t *testing.T) {
 		lineText = "ndx-lean-sandbox-large-output-line"
 	)
 	cmd := fmt.Sprintf("yes %s | head -n %d", lineText, lines)
-	want := lines * (len(lineText) + 1) // 7 MB
+	want := lines * (len(lineText) + 1)
 
 	r, err := s.RunRequest(t.Context(), api.RunRequest{Command: cmd, MaxStdOut: 1024})
 	if err != nil {
@@ -132,7 +121,6 @@ func TestRunSpillsLargeOutput(t *testing.T) {
 	}
 }
 
-// TestRunSpillsStderrOnly verifies the two streams are capped independently.
 func TestRunSpillsStderrOnly(t *testing.T) {
 	s := NewSession()
 	r, err := s.RunRequest(t.Context(), api.RunRequest{
@@ -164,8 +152,6 @@ func TestRunSpillsStderrOnly(t *testing.T) {
 	}
 }
 
-// TestRunSpillKeepsExitCode verifies a non-zero exit survives along with the
-// spill, since the caller needs both to reason about the run.
 func TestRunSpillKeepsExitCode(t *testing.T) {
 	s := NewSession()
 	r, err := s.RunRequest(t.Context(), api.RunRequest{Command: "seq 1 1000; exit 7", MaxStdOut: 64, MaxStdErr: 64})
@@ -182,8 +168,6 @@ func TestRunSpillKeepsExitCode(t *testing.T) {
 	}
 }
 
-// TestRunStreamUncapped pins that the SSE path keeps forwarding every byte,
-// since a streaming consumer wants the whole output, not a spill notice.
 func TestRunStreamUncapped(t *testing.T) {
 	s := NewSession()
 	events, err := s.Stream(t.Context(), "seq 1 1000")

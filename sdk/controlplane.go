@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
-	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 
 	"github.com/ndx-technologies/lean-sandbox/api"
@@ -34,13 +32,10 @@ func (s *ControlPlane) GetSandbox(ctx context.Context, id api.SandboxID) (*Sandb
 	return &Sandbox{Sandbox: out, HTTPClient: s.HTTPClient, ControlPlane: s}, nil
 }
 
-// KeepAlive renews the lease on a sandbox so the janitor does not reclaim it
-// while a long-lived conversation (e.g. a chat thread) is still using it.
 func (s *ControlPlane) KeepAlive(ctx context.Context, id api.SandboxID) error {
 	return s.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+id.String()+"/keepalive", nil, nil)
 }
 
-// Delete tears a sandbox down (deletes its pod).
 func (s *ControlPlane) Delete(ctx context.Context, id api.SandboxID) error {
 	return s.doJSON(ctx, http.MethodDelete, "/v1/sandboxes/"+id.String(), nil, nil)
 }
@@ -81,15 +76,7 @@ func (s *ControlPlane) doJSON(ctx context.Context, method, path string, body, ou
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		var e api.Error
-		if err := json.UnmarshalRead(resp.Body, &e); err != nil {
-			slog.ErrorContext(ctx, "cannot decode error", "error", err)
-		}
-
-		if e.Error == "" {
-			e.Error = resp.Status
-		}
-		return fmt.Errorf("control plane %s: %s", resp.Status, e.Error)
+		return httpError(ctx, resp)
 	}
 
 	if out == nil {

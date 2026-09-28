@@ -13,6 +13,7 @@ import (
 
 	"github.com/ndx-technologies/lean-sandbox/api"
 	"github.com/ndx-technologies/lean-sandbox/internal/jwt"
+	"github.com/ndx-technologies/lean-sandbox/internal/tarx"
 )
 
 // Server is the in-pod agent HTTP server.
@@ -55,6 +56,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/session", s.handleDeleteSession)
 	mux.HandleFunc("GET /v1/file", s.handleReadFile)
 	mux.HandleFunc("PUT /v1/file", s.handleWriteFile)
+	mux.HandleFunc("GET /v1/files", s.handleReadFiles)
+	mux.HandleFunc("PUT /v1/files", s.handleWriteFiles)
 	authed := authMiddleware(s.sandboxID, s.pubKey, mux)
 
 	root := http.NewServeMux()
@@ -173,40 +176,87 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "path query required")
 		return
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "read file: "+err.Error())
+		writeErr(w, http.StatusNotFound, "open: "+err.Error())
 		return
 	}
-	ctx := r.Context()
+	defer f.Close()
 
-	w.Header().Set("Content-Type", "application/json")
-
-	w.WriteHeader(http.StatusOK)
-
-	if err := json.MarshalWrite(w, map[string]string{"content": string(data)}); err != nil {
-		slog.ErrorContext(ctx, "cannot write response", "error", err)
+	info, err := f.Stat()
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "stat: "+err.Error())
+		return
 	}
+	if info.IsDir() {
+		writeErr(w, http.StatusBadRequest, "path is a directory: use /v1/files")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
 func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
-	var req api.WriteRequest
-	if err := json.UnmarshalRead(io.LimitReader(r.Body, 1<<20), &req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
-	}
-	if req.Path == "" {
-		writeErr(w, http.StatusBadRequest, "path required")
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeErr(w, http.StatusBadRequest, "path query required")
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(req.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		writeErr(w, http.StatusBadRequest, "mkdir: "+err.Error())
 		return
 	}
-	if err := os.WriteFile(req.Path, []byte(req.Content), 0o644); err != nil {
-		writeErr(w, http.StatusBadRequest, "write: "+err.Error())
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "create: "+err.Error())
+		return
+	}
+	_, copyErr := io.Copy(f, r.Body)
+	if closeErr := f.Close(); copyErr == nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
+		// A half-written file is worse than none: a later run would read it as
+		// if it were complete.
+		_ = os.Remove(path)
+		writeErr(w, http.StatusBadRequest, "write: "+copyErr.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleWriteFiles(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if root == "" {
+		writeErr(w, http.StatusBadRequest, "root query required")
+		return
+	}
+	if err := tarx.Unpack(r.Body, root); err != nil {
+		writeErr(w, http.StatusBadRequest, "unpack: "+err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleReadFiles(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if root == "" {
+		writeErr(w, http.StatusBadRequest, "root query required")
+		return
+	}
+	if _, err := os.Stat(root); err != nil {
+		writeErr(w, http.StatusNotFound, "stat: "+err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-tar")
+	w.WriteHeader(http.StatusOK)
+
+	if err := tarx.Pack(w, root, ""); err != nil {
+		slog.ErrorContext(r.Context(), "cannot pack", "root", root, "error", err)
+	}
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {

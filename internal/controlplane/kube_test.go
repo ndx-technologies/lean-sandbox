@@ -9,9 +9,6 @@ import (
 	"github.com/ndx-technologies/lean-sandbox/api"
 )
 
-// A sandbox pod's identity is its ServiceAccount and nothing else: the control
-// plane must project it verbatim, and must not pin scheduling to any particular
-// cluster, so this stays portable across Kubernetes distributions.
 func TestPodSpecServiceAccount(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -45,7 +42,6 @@ func TestPodSpecServiceAccount(t *testing.T) {
 	}
 }
 
-// A spec sets only the resource fields it cares about and inherits the rest.
 func TestPodSpecResourceMerge(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -87,8 +83,6 @@ func TestPodSpecResourceMerge(t *testing.T) {
 	}
 }
 
-// The writable budget is the /tmp emptyDir, and it stays capped for an image
-// that is not configured.
 func TestPodSpecTmpDiskLimit(t *testing.T) {
 	pod := newTestCP(t).podSpec(SandboxSpec{Image: "alpine:3"}.WithDefaults(), api.NewSandboxID(), "")
 
@@ -104,8 +98,6 @@ func TestPodSpecTmpDiskLimit(t *testing.T) {
 	t.Fatal(pod.Spec.Volumes)
 }
 
-// Only configured images are served: an image the control plane has no spec for
-// is refused, so no pod can exist whose limits and identity we never set.
 func TestSandboxSpecLookup(t *testing.T) {
 	config := Config{
 		Sandboxes: []SandboxSpec{

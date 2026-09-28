@@ -10,7 +10,6 @@ import (
 	"github.com/ndx-technologies/lean-sandbox/api"
 )
 
-// TestSessionPersistence verifies env + cwd survive across Run calls.
 func TestSessionPersistence(t *testing.T) {
 	s := NewSession()
 
@@ -40,8 +39,6 @@ func TestSessionPersistence(t *testing.T) {
 	}
 }
 
-// TestSessionExitCode verifies the process exit code propagates, including
-// for `exit N` (which terminates the script before markers run).
 func TestSessionExitCode(t *testing.T) {
 	s := NewSession()
 
@@ -65,7 +62,6 @@ func TestSessionExitCode(t *testing.T) {
 	}
 }
 
-// TestSessionMarkersStripped verifies marker lines never leak to user stdout.
 func TestSessionMarkersStripped(t *testing.T) {
 	s := NewSession()
 	r, err := s.Run(t.Context(), "echo visible")
@@ -80,8 +76,6 @@ func TestSessionMarkersStripped(t *testing.T) {
 	}
 }
 
-// TestSessionTimeout verifies a context deadline kills the whole process group
-// (the client-side equivalent of a per-command timeout).
 func TestSessionTimeout(t *testing.T) {
 	s := NewSession()
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
@@ -96,8 +90,6 @@ func TestSessionTimeout(t *testing.T) {
 	}
 }
 
-// TestSessionDefaultCwd verifies the session lands in the process cwd, not a
-// broken `cd ""`.
 func TestSessionDefaultCwd(t *testing.T) {
 	s := NewSession()
 	r, err := s.Run(t.Context(), "pwd")
@@ -109,7 +101,6 @@ func TestSessionDefaultCwd(t *testing.T) {
 	}
 }
 
-// TestSessionConcurrent verifies the session is safe for concurrent use.
 func TestSessionConcurrent(t *testing.T) {
 	s := NewSession()
 	done := make(chan error, 8)
@@ -126,10 +117,6 @@ func TestSessionConcurrent(t *testing.T) {
 	}
 }
 
-// TestSessionNoTrailingNewline verifies output that does not end with a newline
-// keeps its state markers consumed. bash glues the start marker onto the last
-// line of output, and a marker missed that way leaks the whole `export -p` block
-// into the response and into any spill file.
 func TestSessionNoTrailingNewline(t *testing.T) {
 	s := NewSession()
 
@@ -146,8 +133,6 @@ func TestSessionNoTrailingNewline(t *testing.T) {
 		}
 	}
 
-	// The trailer must still be parsed after a glued marker: cwd persistence
-	// proves the pwd marker was consumed.
 	r2, err := s.Run(t.Context(), "pwd")
 	if err != nil {
 		t.Fatalf("run2: %v", err)
@@ -156,9 +141,6 @@ func TestSessionNoTrailingNewline(t *testing.T) {
 		t.Errorf("cwd not persisted: %q", r2.Stdout)
 	}
 
-	// The same filtering feeds the spill file, so the env dump must not land
-	// there either. 5000 bytes of output must produce a 5000-byte file plus the
-	// newline that forwarding adds.
 	r3, err := s.RunRequest(t.Context(), api.RunRequest{Command: `printf "x%.0s" $(seq 1 5000)`, MaxStdOut: 64})
 	if err != nil {
 		t.Fatalf("run3: %v", err)

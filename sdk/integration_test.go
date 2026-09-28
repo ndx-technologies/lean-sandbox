@@ -31,7 +31,6 @@ func TestRealSandbox(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cp.Delete(ctx, sb.Sandbox.ID) })
 
-	// Sequential run: stdout + exit code round-trip.
 	res, err := sb.Run(ctx, "echo hello-lean-sandbox && pwd")
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -43,8 +42,6 @@ func TestRealSandbox(t *testing.T) {
 		t.Errorf("stdout=%q missing marker", res.Stdout)
 	}
 
-	// Parallel runs on the SAME sandbox/session: the agent must serialize
-	// session state safely while running each command in its own process.
 	const n = 5
 	var wg sync.WaitGroup
 	errs := make(chan error, n)

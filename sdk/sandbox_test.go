@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,9 +16,6 @@ import (
 	"github.com/ndx-technologies/lean-sandbox/sdk"
 )
 
-// startAgent spins up the real agent HTTP server in-process on a random port,
-// plus a fake control plane that answers keepalive (204), so Run/Stream's
-// automatic lease renewal works without a real control plane.
 func startAgent(t *testing.T) (*sdk.Sandbox, string) {
 	t.Helper()
 	sandboxID := api.NewSandboxID()
@@ -36,7 +34,6 @@ func startAgent(t *testing.T) (*sdk.Sandbox, string) {
 	}, agentSrv.URL
 }
 
-// mustAgent builds an agent server, failing the test on invalid input.
 func mustAgent(t *testing.T, sandboxID api.SandboxID, pubKeyB64 string) *agent.Server {
 	t.Helper()
 	srv, err := agent.NewServer(sandboxID, pubKeyB64)
@@ -46,7 +43,6 @@ func mustAgent(t *testing.T, sandboxID api.SandboxID, pubKeyB64 string) *agent.S
 	return srv
 }
 
-// mustSign signs an RS256 JWT with the shared jwt package, failing on error.
 func mustSign(t *testing.T, key *rsa.PrivateKey, sub string, ttl time.Duration) string {
 	t.Helper()
 	tok, err := jwt.Sign(key, sub, ttl)
@@ -84,7 +80,6 @@ func TestSessionLifecycle(t *testing.T) {
 	sb, _ := startAgent(t)
 	ctx := context.Background()
 
-	// Persistence across runs.
 	r1, err := sb.Run(ctx, "cd /tmp && export FOO=bar && pwd && echo hello")
 	if err != nil {
 		t.Fatalf("run1: %v", err)
@@ -100,7 +95,6 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("run2 stdout=%q, env did not persist", r2.Stdout)
 	}
 
-	// Exit code propagation.
 	r3, err := sb.Run(ctx, "exit 7")
 	if err != nil {
 		t.Fatalf("run3: %v", err)
@@ -109,7 +103,6 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("run3 exit=%d want 7", r3.ExitCode)
 	}
 
-	// Cleanup.
 	if err := sb.Close(ctx); err != nil {
 		t.Fatalf("close session: %v", err)
 	}
@@ -117,16 +110,17 @@ func TestSessionLifecycle(t *testing.T) {
 
 func TestFileReadWrite(t *testing.T) {
 	sb, _ := startAgent(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
-	if err := sb.WriteFile(ctx, "/tmp/lean-sbx-test.txt", "content-123"); err != nil {
+	path := filepath.Join(t.TempDir(), "lean-sbx-test.txt")
+	if err := sb.WriteFile(ctx, path, []byte("content-123")); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	data, err := sb.ReadFile(ctx, "/tmp/lean-sbx-test.txt")
+	data, err := sb.ReadFile(ctx, path)
 	if err != nil {
 		t.Fatalf("read file: %v", err)
 	}
-	if data != "content-123" {
+	if string(data) != "content-123" {
 		t.Fatalf("read=%q want content-123", data)
 	}
 }
@@ -140,8 +134,6 @@ func TestAgentAuth(t *testing.T) {
 	srv := httptest.NewServer(mustAgent(t, sandboxID, pubB64).Handler())
 	t.Cleanup(srv.Close)
 
-	// /healthz is anonymous on purpose: it backs the k8s readiness probe, and
-	// kubelet probes carry no app token.
 	resp, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -151,32 +143,25 @@ func TestAgentAuth(t *testing.T) {
 		t.Fatalf("healthz status=%d want 200 (anonymous)", resp.StatusCode)
 	}
 
-	// Everything else is gated by the per-sandbox token (test on /v1/file).
 	const endpoint = "/v1/file"
 
-	// No token -> 401.
 	if got := getStatus(t, srv.URL+endpoint, ""); got != http.StatusUnauthorized {
 		t.Fatalf("no-token status=%d want 401", got)
 	}
 
-	// Wrong sandbox id -> 401.
 	if got := getStatus(t, srv.URL+endpoint, mustSign(t, priv, api.NewSandboxID().String(), time.Hour)); got != http.StatusUnauthorized {
 		t.Fatalf("wrong-sub status=%d want 401", got)
 	}
 
-	// Expired -> 401.
 	if got := getStatus(t, srv.URL+endpoint, mustSign(t, priv, sandboxID.String(), -time.Minute)); got != http.StatusUnauthorized {
 		t.Fatalf("expired status=%d want 401", got)
 	}
 
-	// Valid token passes auth; handler then rejects the missing path -> 400.
 	if got := getStatus(t, srv.URL+endpoint, mustSign(t, priv, sandboxID.String(), time.Hour)); got != http.StatusBadRequest {
 		t.Fatalf("valid status=%d want 400", got)
 	}
 }
 
-// TestSessionReopen verifies the sandbox's single session is reused across Run
-// calls and a fresh one can be started after Close.
 func TestSessionReopen(t *testing.T) {
 	sb, _ := startAgent(t)
 	ctx := context.Background()
@@ -187,7 +172,6 @@ func TestSessionReopen(t *testing.T) {
 	if err := sb.Close(ctx); err != nil {
 		t.Fatalf("close session: %v", err)
 	}
-	// After closing, a fresh session can be started on the same sandbox.
 	if _, err := sb.Run(ctx, "echo second"); err != nil {
 		t.Fatalf("run after close: %v", err)
 	}

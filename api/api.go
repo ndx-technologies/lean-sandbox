@@ -43,17 +43,6 @@ type StreamEvent struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// ReadRequest reads a file inside the sandbox filesystem.
-type ReadRequest struct {
-	Path string `json:"path"`
-}
-
-// WriteRequest writes a file inside the sandbox filesystem (creates parent dirs).
-type WriteRequest struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-}
-
 type SandboxRequest struct {
 	Image          string `json:"image"`                     // container image
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // sandbox lifetime; the pod is deleted after this. 0 = default.

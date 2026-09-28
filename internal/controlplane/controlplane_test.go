@@ -12,7 +12,6 @@ import (
 	"github.com/ndx-technologies/lean-sandbox/api"
 )
 
-// newTestCP builds a ControlPlane backed by an in-memory fake clientset.
 func newTestCP(t *testing.T) *ControlPlane {
 	t.Helper()
 	cp := &ControlPlane{
@@ -29,7 +28,6 @@ func newTestCP(t *testing.T) *ControlPlane {
 	return cp
 }
 
-// registerClaimed adds a claimed sandbox directly (bypassing pod creation).
 func registerClaimed(cp *ControlPlane, id api.SandboxID, image string) *Sandbox {
 	sb := &Sandbox{
 		ID:        id,
@@ -49,7 +47,6 @@ func TestKeepAliveRenewsLease(t *testing.T) {
 	id := api.NewSandboxID()
 	sb := registerClaimed(cp, id, "ubuntu:22.04")
 
-	// Simulate an old lease.
 	sb.LastSeen = time.Now().Add(-10 * time.Minute)
 
 	got, err := cp.KeepAlive(context.Background(), id)
@@ -69,8 +66,6 @@ func TestKeepAliveAfterDeleteReportsExpired(t *testing.T) {
 	id := api.NewSandboxID()
 	registerClaimed(cp, id, "ubuntu:22.04")
 
-	// Deleting the pod removes it from tracking; the fake client returns
-	// NotFound which is tolerated, then the lease must report gone.
 	cp.mu.Lock()
 	delete(cp.byID, id)
 	cp.mu.Unlock()
@@ -80,13 +75,11 @@ func TestKeepAliveAfterDeleteReportsExpired(t *testing.T) {
 	}
 }
 
-// TestReconcileExpiresIdleSandbox verifies the janitor reclaims a claimed
-// sandbox whose lease (LastSeen) has lapsed.
 func TestReconcileExpiresIdleSandbox(t *testing.T) {
 	cp := newTestCP(t)
 	id := api.NewSandboxID()
 	sb := registerClaimed(cp, id, "ubuntu:22.04")
-	sb.LastSeen = time.Now().Add(-2 * cp.config.LeaseTTL) // stale lease
+	sb.LastSeen = time.Now().Add(-2 * cp.config.LeaseTTL)
 
 	cp.reconcile(context.Background())
 
@@ -98,14 +91,11 @@ func TestReconcileExpiresIdleSandbox(t *testing.T) {
 	}
 }
 
-// TestReconcileKeepsActiveSandbox verifies a freshly-seen, Running sandbox
-// survives reconcile (its pod exists and is Running, and its lease is live).
 func TestReconcileKeepsActiveSandbox(t *testing.T) {
 	cp := newTestCP(t)
 	id := api.NewSandboxID()
-	sb := registerClaimed(cp, id, "ubuntu:22.04") // LastSeen = now
+	sb := registerClaimed(cp, id, "ubuntu:22.04")
 
-	// Seed the matching Running pod (informational; reconcile no longer sweeps).
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: sb.PodName, Namespace: sb.Namespace},
 		Status:     corev1.PodStatus{Phase: corev1.PodRunning, PodIP: "10.0.0.1"},
@@ -124,9 +114,6 @@ func TestReconcileKeepsActiveSandbox(t *testing.T) {
 	}
 }
 
-// TestNewSandboxRefusesUnconfiguredImage verifies the control plane creates
-// nothing for an image it has no config for: warm pools, limits and identity
-// all come from config, so an unknown image has none of them.
 func TestNewSandboxRefusesUnconfiguredImage(t *testing.T) {
 	tests := []struct {
 		name  string
