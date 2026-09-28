@@ -100,10 +100,15 @@ func TestDirCopy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode: skipping sandbox test")
 	}
+	const dirMode = 0o705
+
 	sb := sandbox(t)
 	ctx := t.Context()
 
 	src := t.TempDir()
+	if err := os.Chmod(src, dirMode); err != nil {
+		t.Fatal(err)
+	}
 	writeFile(t, filepath.Join(src, "keep", "a.txt"), "hello", 0o644)
 	writeFile(t, filepath.Join(src, "run.sh"), "#!/bin/sh\necho from-script\n", 0o755)
 	if err := os.MkdirAll(filepath.Join(src, "empty"), 0o755); err != nil {
@@ -124,8 +129,8 @@ func TestDirCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o700 {
-		t.Errorf("uploaded dir mode = %v, want 0700", fi.Mode().Perm())
+	if fi.Mode().Perm() != dirMode {
+		t.Errorf("uploaded dir mode = %o, want %o", fi.Mode().Perm(), dirMode)
 	}
 
 	res, err := sb.Run(ctx, remote+"/run.sh")
