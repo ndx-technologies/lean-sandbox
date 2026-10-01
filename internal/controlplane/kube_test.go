@@ -83,6 +83,38 @@ func TestPodSpecResourceMerge(t *testing.T) {
 	}
 }
 
+func TestPodSpecHostAliases(t *testing.T) {
+	cp := newTestCP(t)
+	cp.config.HostAliases = []corev1.HostAlias{
+		{IP: "199.36.153.4", Hostnames: []string{"storage.googleapis.com"}},
+	}
+
+	pod := cp.podSpec(SandboxSpec{Image: "alpine:3"}.WithDefaults(), api.NewSandboxID(), "")
+
+	if len(pod.Spec.HostAliases) != 1 {
+		t.Fatal(pod.Spec.HostAliases)
+	}
+	if got := pod.Spec.HostAliases[0].IP; got != "199.36.153.4" {
+		t.Error(got)
+	}
+	if got := pod.Spec.HostAliases[0].Hostnames; len(got) != 1 || got[0] != "storage.googleapis.com" {
+		t.Error(got)
+	}
+}
+
+func TestConfigMergeHostAliases(t *testing.T) {
+	base := Config{HostAliases: []corev1.HostAlias{{IP: "1.2.3.4", Hostnames: []string{"a.example"}}}}
+
+	if got := base.Merge(Config{}).HostAliases; len(got) != 1 || got[0].IP != "1.2.3.4" {
+		t.Error("empty overlay must keep base host aliases", got)
+	}
+
+	overlay := Config{HostAliases: []corev1.HostAlias{{IP: "199.36.153.4", Hostnames: []string{"storage.googleapis.com"}}}}
+	if got := base.Merge(overlay).HostAliases; len(got) != 1 || got[0].IP != "199.36.153.4" {
+		t.Error("overlay host aliases must win", got)
+	}
+}
+
 func TestPodSpecTmpDiskLimit(t *testing.T) {
 	pod := newTestCP(t).podSpec(SandboxSpec{Image: "alpine:3"}.WithDefaults(), api.NewSandboxID(), "")
 

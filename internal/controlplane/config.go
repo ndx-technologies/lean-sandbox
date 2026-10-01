@@ -9,13 +9,14 @@ import (
 )
 
 type Config struct {
-	Sandboxes      []SandboxSpec `json:"sandboxes"`
-	Namespace      string        `json:"namespace"`   // namespace where sandbox pods live (default "sandbox")
-	AgentPort      int           `json:"agent_port"`  // agent container port (default 9090)
-	AgentImage     string        `json:"agent_image"` // image carrying the agent binary for injection
-	LeaseTTL       time.Duration `json:"lease_ttl"`   // sandbox lifetime without KeepAlive (activity-based)
-	ReconcileEvery time.Duration `json:"reconcile_every"`
-	TokenTTL       time.Duration `json:"token_ttl"`
+	Sandboxes      []SandboxSpec      `json:"sandboxes"`
+	Namespace      string             `json:"namespace"`   // namespace where sandbox pods live (default "sandbox")
+	AgentPort      int                `json:"agent_port"`  // agent container port (default 9090)
+	AgentImage     string             `json:"agent_image"` // image carrying the agent binary for injection
+	LeaseTTL       time.Duration      `json:"lease_ttl"`   // sandbox lifetime without KeepAlive (activity-based)
+	ReconcileEvery time.Duration      `json:"reconcile_every"`
+	TokenTTL       time.Duration      `json:"token_ttl"`
+	HostAliases    []corev1.HostAlias `json:"host_aliases,omitzero"` // extra /etc/hosts to every sandbox
 }
 
 func (s Config) WithDefaults() Config {
@@ -63,6 +64,9 @@ func (c Config) Merge(other Config) Config {
 	}
 	if len(other.Sandboxes) > 0 {
 		c.Sandboxes = other.Sandboxes
+	}
+	if len(other.HostAliases) > 0 {
+		c.HostAliases = other.HostAliases
 	}
 	return c
 }

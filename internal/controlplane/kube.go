@@ -47,6 +47,7 @@ func (cp *ControlPlane) podSpec(spec SandboxSpec, id api.SandboxID, pubKeyB64 st
 		Spec: corev1.PodSpec{
 			RestartPolicy:      corev1.RestartPolicyNever,
 			ServiceAccountName: spec.ServiceAccountName,
+			HostAliases:        cp.config.HostAliases,
 			InitContainers: []corev1.Container{
 				{
 					Name:    "agent-inject",
