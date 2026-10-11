@@ -41,7 +41,6 @@ type ControlPlane struct {
 	mu         sync.RWMutex
 	byID       map[api.SandboxID]*Sandbox
 	byImage    map[string][]*Sandbox // warm (unclaimed) sandboxes per image
-	startedAt  time.Time             // this instance's start; older pods are orphans
 	signingKey *rsa.PrivateKey       // signs per-sandbox JWTs; private key never leaves this process
 	pubKeyB64  string                // base64 SPKI public key, injected into agent pods
 }
@@ -69,7 +68,6 @@ func New(config Config) (*ControlPlane, error) {
 		kube:       kube,
 		byID:       map[api.SandboxID]*Sandbox{},
 		byImage:    map[string][]*Sandbox{},
-		startedAt:  time.Now(),
 		signingKey: signingKey,
 		pubKeyB64:  pubKeyB64,
 	}, nil
@@ -124,12 +122,6 @@ func (cp *ControlPlane) deleteExpired(ctx context.Context) {
 	}
 }
 
-// reapOrphans deletes sandbox pods that are not tracked by this control plane
-// instance and were created before this instance started — i.e. everything left
-// over from a previous instance after a restart, warm or active. Pods created
-// by this instance (registered, or still provisioning) are never touched.
-// Clients must recreate a sandbox if it is gone (NewSandbox), since a restarted
-// control plane cannot account for it.
 func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 	pods, err := cp.kube.CoreV1().Pods(cp.config.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app=lean-sandbox",
@@ -148,7 +140,7 @@ func (cp *ControlPlane) reapOrphans(ctx context.Context) {
 		if tracked[pod.Name] {
 			continue
 		}
-		if !pod.CreationTimestamp.Time.Before(cp.startedAt) {
+		if time.Since(pod.CreationTimestamp.Time) < cp.config.PodProvisionGrace {
 			continue
 		}
 		slog.InfoContext(ctx, "reaping orphan sandbox pod", "pod", pod.Name, "phase", pod.Status.Phase)
@@ -331,8 +323,8 @@ func (cp *ControlPlane) createPod(ctx context.Context, spec SandboxSpec) (*Sandb
 // agent's anonymous /healthz), then records the pod IP endpoint. Native
 // readiness replaces the old in-process /healthz poll.
 func (cp *ControlPlane) waitPodReady(ctx context.Context, sb *Sandbox) error {
-	timeout := time.After(3 * time.Minute)
-	tick := time.NewTicker(2 * time.Second)
+	timeout := time.After(cp.config.WaitPodReadyTimeout)
+	tick := time.NewTicker(cp.config.WaitPodReadyPollInterval)
 	defer tick.Stop()
 	for {
 		select {

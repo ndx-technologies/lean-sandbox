@@ -9,14 +9,17 @@ import (
 )
 
 type Config struct {
-	Sandboxes      []SandboxSpec      `json:"sandboxes"`
-	Namespace      string             `json:"namespace"`   // namespace where sandbox pods live (default "sandbox")
-	AgentPort      int                `json:"agent_port"`  // agent container port (default 9090)
-	AgentImage     string             `json:"agent_image"` // image carrying the agent binary for injection
-	LeaseTTL       time.Duration      `json:"lease_ttl"`   // sandbox lifetime without KeepAlive (activity-based)
-	ReconcileEvery time.Duration      `json:"reconcile_every"`
-	TokenTTL       time.Duration      `json:"token_ttl"`
-	HostAliases    []corev1.HostAlias `json:"host_aliases,omitzero"` // extra /etc/hosts to every sandbox
+	Sandboxes                []SandboxSpec      `json:"sandboxes"`
+	Namespace                string             `json:"namespace"`                    // namespace where sandbox pods live
+	AgentPort                int                `json:"agent_port"`                   // agent container port
+	AgentImage               string             `json:"agent_image"`                  // image carrying the agent binary for injection
+	LeaseTTL                 time.Duration      `json:"lease_ttl"`                    // sandbox lifetime without KeepAlive (activity-based)
+	ReconcileEvery           time.Duration      `json:"reconcile_every"`              // warm-pool reconcile, lease reaping and pod informer resync period
+	TokenTTL                 time.Duration      `json:"token_ttl"`                    // lifetime of the access token minted for a client
+	WaitPodReadyTimeout      time.Duration      `json:"wait_pod_ready_timeout"`       // how long a freshly created pod may take to become Ready
+	WaitPodReadyPollInterval time.Duration      `json:"wait_pod_ready_poll_interval"` // how often to poll pod readiness while waiting
+	PodProvisionGrace        time.Duration      `json:"pod_provision_grace"`          // untracked pods younger than this are assumed to still be provisioning
+	HostAliases              []corev1.HostAlias `json:"host_aliases,omitzero"`        // extra /etc/hosts to every sandbox
 }
 
 func (s Config) WithDefaults() Config {
@@ -34,6 +37,15 @@ func (s Config) WithDefaults() Config {
 	}
 	if s.TokenTTL == 0 {
 		s.TokenTTL = 15 * time.Minute
+	}
+	if s.WaitPodReadyTimeout == 0 {
+		s.WaitPodReadyTimeout = 3 * time.Minute
+	}
+	if s.WaitPodReadyPollInterval == 0 {
+		s.WaitPodReadyPollInterval = 2 * time.Second
+	}
+	if s.PodProvisionGrace == 0 {
+		s.PodProvisionGrace = 5 * time.Minute
 	}
 	for i := range s.Sandboxes {
 		s.Sandboxes[i] = s.Sandboxes[i].WithDefaults()
@@ -61,6 +73,15 @@ func (c Config) Merge(other Config) Config {
 	}
 	if other.TokenTTL != 0 {
 		c.TokenTTL = other.TokenTTL
+	}
+	if other.WaitPodReadyTimeout != 0 {
+		c.WaitPodReadyTimeout = other.WaitPodReadyTimeout
+	}
+	if other.WaitPodReadyPollInterval != 0 {
+		c.WaitPodReadyPollInterval = other.WaitPodReadyPollInterval
+	}
+	if other.PodProvisionGrace != 0 {
+		c.PodProvisionGrace = other.PodProvisionGrace
 	}
 	if len(other.Sandboxes) > 0 {
 		c.Sandboxes = other.Sandboxes

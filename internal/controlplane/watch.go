@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
@@ -21,8 +22,8 @@ func (cp *ControlPlane) watchPods(ctx context.Context) {
 	)
 	informer := f.Core().V1().Pods().Informer()
 	if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj any) { cp.onPodEvent(obj.(*corev1.Pod)) },
-		UpdateFunc: func(_, newObj any) { cp.onPodEvent(newObj.(*corev1.Pod)) },
+		AddFunc:    func(obj any) { cp.onPodEvent(ctx, obj.(*corev1.Pod)) },
+		UpdateFunc: func(_, newObj any) { cp.onPodEvent(ctx, newObj.(*corev1.Pod)) },
 		DeleteFunc: func(obj any) { cp.onPodDelete(obj) },
 	}); err != nil {
 		slog.ErrorContext(ctx, "watch pods", "error", err)
@@ -31,13 +32,17 @@ func (cp *ControlPlane) watchPods(ctx context.Context) {
 	<-ctx.Done()
 }
 
-func (cp *ControlPlane) onPodEvent(pod *corev1.Pod) {
+func (cp *ControlPlane) onPodEvent(ctx context.Context, pod *corev1.Pod) {
 	if podReady(pod) {
 		return
 	}
 	if id, ok := cp.sandboxIDByPodName(pod.Name); ok {
-		slog.Info("pod not ready, dropping", "pod", pod.Name, "phase", pod.Status.Phase)
+		slog.InfoContext(ctx, "pod not ready, dropping", "pod", pod.Name, "phase", pod.Status.Phase)
 		cp.dropTracked(id)
+
+		if err := cp.kube.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			slog.ErrorContext(ctx, "delete not-ready pod", "pod", pod.Name, "error", err)
+		}
 	}
 }
 

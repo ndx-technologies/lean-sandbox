@@ -6,6 +6,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -14,13 +15,15 @@ import (
 
 func newTestCP(t *testing.T) *ControlPlane {
 	t.Helper()
+	config := Config{
+		Namespace:      "opensandbox",
+		AgentPort:      9090,
+		LeaseTTL:       15 * time.Minute,
+		ReconcileEvery: time.Minute,
+	}
+	config = config.WithDefaults()
 	cp := &ControlPlane{
-		config: Config{
-			Namespace:      "opensandbox",
-			AgentPort:      9090,
-			LeaseTTL:       15 * time.Minute,
-			ReconcileEvery: time.Minute,
-		},
+		config:  config,
 		kube:    fake.NewSimpleClientset(),
 		byID:    map[api.SandboxID]*Sandbox{},
 		byImage: map[string][]*Sandbox{},
@@ -138,5 +141,126 @@ func TestNewSandboxRefusesUnconfiguredImage(t *testing.T) {
 				t.Error(tt, len(pods.Items))
 			}
 		})
+	}
+}
+
+// seedPod creates a sandbox pod in the fake cluster with the given age and phase.
+func seedPod(t *testing.T, cp *ControlPlane, name string, age time.Duration, phase corev1.PodPhase) {
+	t.Helper()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         cp.config.Namespace,
+			Labels:            map[string]string{"app": "lean-sandbox"},
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-age)),
+		},
+		Status: corev1.PodStatus{Phase: phase},
+	}
+	if _, err := cp.kube.CoreV1().Pods(cp.config.Namespace).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed pod: %v", err)
+	}
+}
+
+func podExists(t *testing.T, cp *ControlPlane, name string) bool {
+	t.Helper()
+	_, err := cp.kube.CoreV1().Pods(cp.config.Namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err == nil {
+		return true
+	}
+	if apierrors.IsNotFound(err) {
+		return false
+	}
+	t.Fatalf("get pod: %v", err)
+	return false
+}
+
+// A pod dropped from tracking (e.g. the watch saw it go not-ready) but whose API
+// object is still around must be reclaimed once it ages past the provisioning
+// grace period — otherwise the namespace never returns to PoolSizeWarm.
+func TestReapOrphansReclaimsUntrackedPod(t *testing.T) {
+	cp := newTestCP(t)
+	seedPod(t, cp, "lean-sbx-orphan", 2*cp.config.PodProvisionGrace, corev1.PodRunning)
+
+	cp.reapOrphans(context.Background())
+
+	if podExists(t, cp, "lean-sbx-orphan") {
+		t.Fatal("untracked pod older than the grace period was not reaped")
+	}
+}
+
+// A pod this instance just created is untracked while waitPodReady runs; the
+// reaper must not touch it.
+func TestReapOrphansSparesFreshPod(t *testing.T) {
+	cp := newTestCP(t)
+	seedPod(t, cp, "lean-sbx-fresh", 0, corev1.PodPending)
+
+	cp.reapOrphans(context.Background())
+
+	if !podExists(t, cp, "lean-sbx-fresh") {
+		t.Fatal("fresh untracked pod was incorrectly reaped")
+	}
+}
+
+// A tracked pod is owned by the control plane regardless of age.
+func TestReapOrphansSparesTrackedPod(t *testing.T) {
+	cp := newTestCP(t)
+	id := api.NewSandboxID()
+	sb := registerClaimed(cp, id, "ubuntu:22.04")
+	seedPod(t, cp, sb.PodName, 2*cp.config.PodProvisionGrace, corev1.PodRunning)
+
+	cp.reapOrphans(context.Background())
+
+	if !podExists(t, cp, sb.PodName) {
+		t.Fatal("tracked pod was incorrectly reaped")
+	}
+}
+
+// A tracked pod that stops being Ready is dropped from tracking and its API
+// object is deleted, so it cannot be handed out and cannot leak.
+func TestOnPodEventDeletesNotReadyPod(t *testing.T) {
+	cp := newTestCP(t)
+	id := api.NewSandboxID()
+	sb := registerClaimed(cp, id, "ubuntu:22.04")
+	seedPod(t, cp, sb.PodName, 0, corev1.PodRunning)
+
+	pod, err := cp.kube.CoreV1().Pods(sb.Namespace).Get(context.Background(), sb.PodName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	cp.onPodEvent(context.Background(), pod)
+
+	cp.mu.RLock()
+	_, ok := cp.byID[id]
+	cp.mu.RUnlock()
+	if ok {
+		t.Fatal("not-ready pod was not dropped from tracking")
+	}
+	if podExists(t, cp, sb.PodName) {
+		t.Fatal("not-ready pod was not deleted")
+	}
+}
+
+// A Ready pod is left alone.
+func TestOnPodEventKeepsReadyPod(t *testing.T) {
+	cp := newTestCP(t)
+	id := api.NewSandboxID()
+	sb := registerClaimed(cp, id, "ubuntu:22.04")
+	seedPod(t, cp, sb.PodName, 0, corev1.PodRunning)
+
+	pod, err := cp.kube.CoreV1().Pods(sb.Namespace).Get(context.Background(), sb.PodName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	cp.onPodEvent(context.Background(), pod)
+
+	cp.mu.RLock()
+	_, ok := cp.byID[id]
+	cp.mu.RUnlock()
+	if !ok {
+		t.Fatal("ready pod was incorrectly dropped")
+	}
+	if !podExists(t, cp, sb.PodName) {
+		t.Fatal("ready pod was incorrectly deleted")
 	}
 }
