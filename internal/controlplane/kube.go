@@ -56,6 +56,17 @@ func (cp *ControlPlane) podSpec(spec SandboxSpec, id api.SandboxID, pubKeyB64 st
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "agent-bin", MountPath: agentMountPath},
 					},
+					SecurityContext: &corev1.SecurityContext{
+						AllowPrivilegeEscalation: new(false),
+						Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+						RunAsNonRoot:             new(true),
+						RunAsUser:                new(int64(1000)),
+						RunAsGroup:               new(int64(1000)),
+						ReadOnlyRootFilesystem:   new(true),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 				},
 			},
 			Containers: []corev1.Container{
